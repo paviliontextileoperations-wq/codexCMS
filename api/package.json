@@ -1,0 +1,12 @@
+{
+  "name": "pavilion-cms-api",
+  "version": "1.2.5",
+  "private": true,
+  "type": "commonjs",
+  "main": "handler.cjs",
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.946.0",
+    "@aws-sdk/s3-request-presigner": "^3.946.0",
+    "pg": "^8.20.0"
+  }
+}
