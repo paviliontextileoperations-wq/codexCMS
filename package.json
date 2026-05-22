@@ -1,7 +1,7 @@
 {
   "name": "pavilion-textile-cms",
   "private": true,
-  "version": "1.2.5",
+  "version": "1.2.7",
   "description": "Pavilion Textile Group B2B warehouse desktop application",
   "author": "Pavilion Textile Group",
   "type": "module",
