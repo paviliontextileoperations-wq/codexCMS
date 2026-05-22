@@ -47,9 +47,14 @@ export const inventoryStore = {
   byDocument(documentId: string): InventoryMovement[] {
     return readMovements().filter((m) => m.documentId === documentId);
   },
-  log(m: Omit<InventoryMovement, "id" | "createdAt">): InventoryMovement {
+  log(m: Omit<InventoryMovement, "id" | "createdAt"> & { id?: string; createdAt?: number }): InventoryMovement {
     const now = Date.now();
-    const entry: InventoryMovement = { ...m, id: nanoid(10), createdAt: now, updatedAt: now };
+    const entry: InventoryMovement = {
+      ...m,
+      id: m.id ?? nanoid(10),
+      createdAt: m.createdAt ?? now,
+      updatedAt: now,
+    };
     const list = readMovements();
     list.unshift(entry);
     writeMovements(list);

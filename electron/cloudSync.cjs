@@ -150,6 +150,73 @@ function toNumber(value, fallback = 0) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function asJson(value, fallback) {
+  if (value === null || value === undefined) return fallback;
+  if (typeof value === "object") return value;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return fallback;
+  }
+}
+
+function uuidOrNull(value) {
+  const text = String(value || "");
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(text)
+    ? text
+    : null;
+}
+
+function warehouseCodeFor(value) {
+  const text = String(value || "").trim().toLowerCase();
+  if (text === "shop" || text === "shop floor" || text === "sala de ventas") return "SHOP";
+  if (text === "returns" || text === "returns area" || text === "zona de devoluciones") return "RETURNS";
+  if (/^[A-Z0-9_-]+$/.test(String(value || "").trim()) && String(value).trim().length <= 16) {
+    return String(value).trim().toUpperCase();
+  }
+  return "MAIN";
+}
+
+function warehouseNameFor(code) {
+  if (code === "SHOP") return "Shop Floor";
+  if (code === "RETURNS") return "Returns Area";
+  return "Main Warehouse";
+}
+
+async function ensureWarehouseAndLocation(client, warehouseInput, locationInput) {
+  const warehouseCode = warehouseCodeFor(warehouseInput);
+  const warehouse = await client.query(
+    `
+      INSERT INTO cms.warehouses (code, name, country)
+      VALUES ($1, $2, 'Spain')
+      ON CONFLICT (code) DO UPDATE SET
+        name = EXCLUDED.name,
+        updated_at = now()
+      RETURNING id, code
+    `,
+    [warehouseCode, warehouseNameFor(warehouseCode)],
+  );
+  const warehouseId = warehouse.rows[0].id;
+  const locationCode = String(locationInput || "A-01-01").trim() || "A-01-01";
+  const location = await client.query(
+    `
+      INSERT INTO cms.warehouse_locations (warehouse_id, location_code, location_label)
+      VALUES ($1, $2, $2)
+      ON CONFLICT (warehouse_id, location_code) DO UPDATE SET
+        location_label = EXCLUDED.location_label,
+        updated_at = now()
+      RETURNING id, location_code
+    `,
+    [warehouseId, locationCode],
+  );
+  return {
+    warehouseId,
+    warehouseCode,
+    locationId: location.rows[0].id,
+    locationCode,
+  };
+}
+
 function parseComposition(value) {
   if (!value || typeof value !== "string") return [];
   return value
@@ -268,6 +335,140 @@ async function loadCustomersFromNormalized(client) {
             .join(", ")
         : "",
       taxRate: row.tax_rate_percent == null ? undefined : toNumber(row.tax_rate_percent, 0),
+      createdAt: toMs(row.created_at),
+      updatedAt: toMs(row.updated_at),
+    };
+  });
+}
+
+async function loadSalesFromNormalized(client) {
+  const ordersResult = await client.query(`
+    SELECT
+      o.*,
+      i.invoice_number AS normalized_invoice_number,
+      i.tax_profile AS invoice_tax_profile,
+      i.due_date AS invoice_due_date,
+      i.notes AS invoice_notes,
+      src.legacy_id AS source_legacy_id,
+      src.id AS source_uuid
+    FROM cms.orders o
+    LEFT JOIN cms.invoices i ON i.order_id = o.id
+    LEFT JOIN cms.orders src ON src.id = o.source_order_id
+    ORDER BY o.created_at DESC
+  `);
+  if (ordersResult.rows.length === 0) return [];
+
+  const orderIds = ordersResult.rows.map((row) => row.id);
+  const linesResult = await client.query(
+    `
+      SELECT *
+      FROM cms.order_lines
+      WHERE order_id = ANY($1::uuid[])
+      ORDER BY created_at, id
+    `,
+    [orderIds],
+  );
+  const paymentsResult = await client.query(
+    `
+      SELECT *
+      FROM cms.order_payments
+      WHERE order_id = ANY($1::uuid[])
+      ORDER BY payment_date, created_at
+    `,
+    [orderIds],
+  );
+  const returnsResult = await client.query(
+    `
+      SELECT *
+      FROM cms.order_returns
+      WHERE order_id = ANY($1::uuid[])
+      ORDER BY created_at, id
+    `,
+    [orderIds],
+  );
+
+  const byOrder = (rows) => {
+    const grouped = new Map();
+    for (const row of rows) {
+      const key = String(row.order_id);
+      grouped.set(key, [...(grouped.get(key) ?? []), row]);
+    }
+    return grouped;
+  };
+  const linesByOrder = byOrder(linesResult.rows);
+  const paymentsByOrder = byOrder(paymentsResult.rows);
+  const returnsByOrder = byOrder(returnsResult.rows);
+
+  return ordersResult.rows.map((row) => {
+    const orderId = String(row.id);
+    const sourceDocumentId = row.source_legacy_id || (row.source_uuid ? String(row.source_uuid) : undefined);
+    const taxBreakdown = asJson(row.tax_breakdown, undefined);
+    const transport =
+      row.transport_method || row.transport_label || Number(row.transport_fee ?? 0) > 0
+        ? {
+            method: row.transport_method ?? "PICKUP",
+            label: row.transport_label ?? "",
+            fee: toNumber(row.transport_fee, 0),
+          }
+        : undefined;
+
+    return {
+      id: row.legacy_id || orderId,
+      invoiceNumber: row.normalized_invoice_number || row.order_number || "",
+      documentType: row.document_type ?? "INVOICE",
+      documentStatus: row.document_status ?? "open",
+      deliveryStatus: row.delivery_status ?? "open",
+      dueDate: row.invoice_due_date ? toMs(row.invoice_due_date) : undefined,
+      invoiceNotes: row.invoice_notes ?? undefined,
+      invoiceTaxProfile: row.invoice_tax_profile ?? undefined,
+      salesChannel: row.sales_channel ?? "physical_store",
+      sourceDocumentId,
+      stockMovementCreated: Boolean(row.stock_movement_created),
+      cancelledAt: row.cancelled_at ? toMs(row.cancelled_at) : undefined,
+      cancelledBy: row.cancelled_by ?? undefined,
+      cancellationReason: row.cancellation_reason ?? undefined,
+      customerId: row.customer_id ? String(row.customer_id) : "",
+      customerSnapshot: asJson(row.customer_snapshot, {}),
+      lines: (linesByOrder.get(orderId) ?? []).map((line) => ({
+        productId: line.sku_id ? String(line.sku_id) : line.product_id ? String(line.product_id) : "",
+        barcode: line.sku_code_snapshot ?? "",
+        name: line.product_name_snapshot ?? "",
+        size: line.size_snapshot ?? undefined,
+        color: line.colour_snapshot ?? undefined,
+        unitPrice: toNumber(line.unit_price, 0),
+        quantity: Math.max(1, Math.round(toNumber(line.quantity, 1))),
+        discountPct: toNumber(line.discount_percent, 0),
+      })),
+      returns: (returnsByOrder.get(orderId) ?? []).map((entry) => ({
+        id: entry.legacy_id || String(entry.id),
+        productId: entry.sku_id ? String(entry.sku_id) : "",
+        quantity: Math.max(1, Math.round(toNumber(entry.quantity, 1))),
+        reason: entry.reason ?? undefined,
+        condition: entry.condition ?? undefined,
+        refundAmount: toNumber(entry.refund_amount, 0),
+        refundMethod: entry.refund_method ?? undefined,
+        stockAction: entry.stock_action ?? "back_to_stock",
+        notes: entry.notes ?? undefined,
+        createdAt: toMs(entry.created_at),
+      })),
+      subtotal: toNumber(row.subtotal, 0),
+      taxRate: toNumber(row.tax_rate, 0),
+      tax: toNumber(row.tax_amount, 0),
+      taxBreakdown,
+      transport,
+      total: toNumber(row.total, 0),
+      paymentStatus: row.payment_status ?? "OPEN",
+      amountPaid: toNumber(row.amount_paid, 0),
+      amountDue: toNumber(row.amount_due, 0),
+      payments: (paymentsByOrder.get(orderId) ?? []).map((payment) => ({
+        id: payment.legacy_id || String(payment.id),
+        amount: toNumber(payment.amount, 0),
+        method: payment.method ?? "OTHER",
+        note: payment.note ?? undefined,
+        paymentDate: payment.payment_date ? toMs(payment.payment_date) : undefined,
+        reference: payment.reference ?? undefined,
+        createdAt: toMs(payment.created_at),
+      })),
       createdAt: toMs(row.created_at),
       updatedAt: toMs(row.updated_at),
     };
@@ -402,6 +603,7 @@ async function loadMaintenanceFromNormalized(client) {
 async function hydrateFromNormalized(client) {
   const products = await loadProductsFromNormalized(client);
   const customers = await loadCustomersFromNormalized(client);
+  const sales = await loadSalesFromNormalized(client);
   const inventoryMovements = await loadInventoryMovementsFromNormalized(client);
   const inventoryLocations = await loadInventoryLocationsFromNormalized(client);
   const images = await loadImagesFromNormalized(client);
@@ -410,7 +612,7 @@ async function hydrateFromNormalized(client) {
   return {
     "form.products.v1": JSON.stringify(products),
     "form.customers.v1": JSON.stringify(customers),
-    "form.sales.v1": "[]",
+    "form.sales.v1": JSON.stringify(sales),
     "form.inventoryMovements.v1": JSON.stringify(inventoryMovements),
     "form.inventoryLocations.v1": JSON.stringify(inventoryLocations),
     "form.productMaintenance.v1": JSON.stringify(maintenance),
@@ -421,7 +623,7 @@ async function hydrateFromNormalized(client) {
 
 async function upsertRawRecord(client, key, raw, clientId) {
   let nextRaw = raw ?? null;
-  if (MERGEABLE_ARRAY_KEYS.has(key) && typeof raw === "string") {
+  if (clientId !== "normalized-hydration" && MERGEABLE_ARRAY_KEYS.has(key) && typeof raw === "string") {
     const existing = await client.query("SELECT value FROM cms.app_settings WHERE key = $1", [key]);
     const value = existing.rows[0]?.value ?? {};
     const existingRaw = typeof value.raw === "string" ? value.raw : null;
@@ -488,14 +690,8 @@ async function cloudPull(payload = {}) {
   await client.connect();
   try {
     await ensureAppSettings(client);
-    const result = await client.query(
-      "SELECT key, value, updated_at FROM cms.app_settings WHERE key = ANY($1::text[]) ORDER BY key",
-      [keys],
-    );
-
-    const present = new Set(result.rows.map((row) => row.key));
-    const missingCore = CORE_KEYS.some((key) => keys.includes(key) && !present.has(key));
-    if (missingCore) {
+    const shouldHydrate = CORE_KEYS.some((key) => keys.includes(key));
+    if (shouldHydrate) {
       const hydrated = await hydrateFromNormalized(client);
       for (const [key, raw] of Object.entries(hydrated)) {
         if (keys.includes(key) || key === "form.products.wiped.v1") {
@@ -504,14 +700,14 @@ async function cloudPull(payload = {}) {
       }
     }
 
-    const next = await client.query(
+    const result = await client.query(
       "SELECT key, value, updated_at FROM cms.app_settings WHERE key = ANY($1::text[]) ORDER BY key",
       [keys],
     );
 
     return {
       ok: true,
-      records: next.rows.map(rowToRecord),
+      records: result.rows.map(rowToRecord),
       serverTime: new Date().toISOString(),
     };
   } finally {
@@ -553,7 +749,193 @@ async function cloudPush(payload = {}) {
   }
 }
 
+async function adjustInventory(payload = {}) {
+  const allowedTypes = new Set([
+    "sale",
+    "return",
+    "cancel_restore",
+    "adjustment",
+    "initial_import",
+    "inbound",
+    "outbound",
+    "stocktake",
+    "transfer",
+  ]);
+  const movementType = allowedTypes.has(payload.movementType) ? payload.movementType : "adjustment";
+  const skuText = String(payload.sku || payload.productId || "").trim();
+  const productUuid = uuidOrNull(payload.productId);
+  const client = createDatabaseClient();
+  await client.connect();
+
+  try {
+    await client.query("BEGIN");
+    const skuResult = await client.query(
+      `
+        SELECT id, sku_code, stock_qty, low_stock_threshold
+        FROM cms.skus
+        WHERE ($1::uuid IS NOT NULL AND id = $1::uuid)
+           OR sku_code = $2
+           OR legacy_id = $3
+        LIMIT 1
+      `,
+      [productUuid, skuText, String(payload.productId || "")],
+    );
+    const sku = skuResult.rows[0];
+    if (!sku) {
+      const error = new Error(`SKU not found for inventory adjustment: ${skuText || payload.productId || "unknown"}`);
+      error.statusCode = 404;
+      throw error;
+    }
+
+    const { warehouseId, warehouseCode, locationId, locationCode } = await ensureWarehouseAndLocation(
+      client,
+      payload.warehouse,
+      payload.location,
+    );
+
+    await client.query(
+      `
+        INSERT INTO cms.sku_inventory_balances (sku_id, warehouse_id, location_id, qty, min_qty, last_counted_at)
+        VALUES ($1, $2, $3, 0, $4, CASE WHEN $5 THEN now() ELSE null END)
+        ON CONFLICT (sku_id, warehouse_id, location_id) DO NOTHING
+      `,
+      [sku.id, warehouseId, locationId, Math.max(0, Math.round(toNumber(sku.low_stock_threshold, 0))), movementType === "stocktake"],
+    );
+
+    const balanceResult = await client.query(
+      `
+        SELECT id, qty
+        FROM cms.sku_inventory_balances
+        WHERE sku_id = $1
+          AND warehouse_id = $2
+          AND location_id = $3
+        FOR UPDATE
+      `,
+      [sku.id, warehouseId, locationId],
+    );
+    const balance = balanceResult.rows[0];
+    const previousQty = Math.max(0, Math.round(toNumber(balance?.qty, 0)));
+    let newQty = payload.newQty === undefined || payload.newQty === null
+      ? previousQty + Math.round(toNumber(payload.quantityChange, 0))
+      : Math.round(toNumber(payload.newQty, previousQty));
+    if (movementType === "transfer") {
+      newQty = previousQty;
+    }
+    if (newQty < 0) {
+      const error = new Error("Inventory adjustment would make stock negative.");
+      error.statusCode = 400;
+      throw error;
+    }
+    const quantityChange = newQty - previousQty;
+
+    await client.query(
+      `
+        UPDATE cms.sku_inventory_balances
+        SET
+          qty = $1,
+          last_counted_at = CASE WHEN $2 THEN now() ELSE last_counted_at END,
+          updated_at = now()
+        WHERE id = $3
+      `,
+      [newQty, movementType === "stocktake", balance.id],
+    );
+
+    const documentUuid = uuidOrNull(payload.documentId);
+    const movement = await client.query(
+      `
+        INSERT INTO cms.inventory_movements (
+          legacy_id, sku_id, movement_type, document_id, previous_qty,
+          quantity_change, new_qty, reason_category, warehouse_id, location_id,
+          external_reference, notes, created_by, created_at
+        ) VALUES (
+          $1, $2, $3, $4, $5,
+          $6, $7, $8, $9, $10,
+          $11, $12, $13, now()
+        )
+        ON CONFLICT (legacy_id) DO UPDATE SET
+          sku_id = EXCLUDED.sku_id,
+          movement_type = EXCLUDED.movement_type,
+          document_id = EXCLUDED.document_id,
+          previous_qty = EXCLUDED.previous_qty,
+          quantity_change = EXCLUDED.quantity_change,
+          new_qty = EXCLUDED.new_qty,
+          reason_category = EXCLUDED.reason_category,
+          warehouse_id = EXCLUDED.warehouse_id,
+          location_id = EXCLUDED.location_id,
+          external_reference = EXCLUDED.external_reference,
+          notes = EXCLUDED.notes,
+          created_by = EXCLUDED.created_by
+        RETURNING id, created_at
+      `,
+      [
+        uuidOrNull(payload.id) ? null : payload.id || null,
+        sku.id,
+        movementType,
+        documentUuid,
+        previousQty,
+        quantityChange,
+        newQty,
+        payload.reason || null,
+        warehouseId,
+        locationId,
+        documentUuid ? null : payload.documentId || null,
+        payload.notes || null,
+        payload.actor || "desktop",
+      ],
+    );
+    const movementId = movement.rows[0].id;
+
+    await client.query(
+      `
+        INSERT INTO cms.audit_log (actor, action, entity_table, entity_id, before_data, after_data)
+        VALUES ($1, $2, 'sku_inventory_balances', $3, $4::jsonb, $5::jsonb)
+      `,
+      [
+        payload.actor || "desktop",
+        `inventory.${movementType}`,
+        String(sku.id),
+        JSON.stringify({ qty: previousQty, warehouse: warehouseCode, location: locationCode }),
+        JSON.stringify({
+          qty: newQty,
+          delta: quantityChange,
+          warehouse: warehouseCode,
+          location: locationCode,
+          movementId: String(movementId),
+        }),
+      ],
+    );
+
+    await client.query("COMMIT");
+    return {
+      ok: true,
+      previousQty,
+      quantityChange,
+      newQty,
+      movement: {
+        id: String(movementId),
+        movementType,
+        productId: String(sku.id),
+        sku: sku.sku_code,
+        previousQty,
+        quantityChange,
+        newQty,
+        reason: payload.reason || undefined,
+        warehouse: warehouseCode,
+        location: locationCode,
+        notes: payload.notes || undefined,
+        createdAt: toMs(movement.rows[0].created_at),
+      },
+    };
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    await client.end().catch(() => undefined);
+  }
+}
+
 module.exports = {
+  adjustInventory,
   apiRequest,
   cloudPull,
   cloudPush,

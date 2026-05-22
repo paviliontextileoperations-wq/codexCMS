@@ -1,7 +1,7 @@
 const { S3Client, PutObjectCommand } = require("@aws-sdk/client-s3");
 const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 const crypto = require("node:crypto");
-const { cloudPull, cloudPush } = require("../electron/cloudSync.cjs");
+const { adjustInventory, cloudPull, cloudPush } = require("../electron/cloudSync.cjs");
 const { createDatabaseClient, databaseHealth } = require("../electron/database.cjs");
 
 const REGION = process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION || "eu-south-2";
@@ -348,6 +348,45 @@ async function registerImageAsset(payload) {
         asset.mimeType || "image/jpeg",
       ],
     );
+    const imageUrl = asset.url || imageUrlForKey(asset.cloudKey);
+    const shouldUseAsMain = ["front", "model_front"].includes(asset.imageRole);
+    if (imageUrl && asset.skuId) {
+      await client.query(
+        `
+          UPDATE cms.skus
+          SET image_url = $1, updated_at = now()
+          WHERE id = $2
+            AND ($3::boolean OR image_url IS NULL OR image_url = '')
+        `,
+        [imageUrl, asset.skuId, shouldUseAsMain],
+      );
+    }
+    if (imageUrl && asset.productId) {
+      await client.query(
+        `
+          UPDATE cms.products
+          SET main_picture_url = $1, updated_at = now()
+          WHERE id = $2
+            AND ($3::boolean OR main_picture_url IS NULL OR main_picture_url = '')
+        `,
+        [imageUrl, asset.productId, shouldUseAsMain],
+      );
+    }
+    await client.query(
+      `
+        INSERT INTO cms.audit_log (actor, action, entity_table, entity_id, after_data)
+        VALUES ('api', 'image.register', 'product_image_assets', $1, $2::jsonb)
+      `,
+      [
+        String(upsert.rows[0].id),
+        JSON.stringify({
+          sku: asset.skuCode,
+          imageRole: asset.imageRole,
+          url: imageUrl,
+          cloudKey: asset.cloudKey,
+        }),
+      ],
+    );
     await client.query("COMMIT");
     return upsert.rows[0];
   } catch (error) {
@@ -495,6 +534,22 @@ async function saveInvoiceDocument(payload) {
       `,
       [invoiceId, fileName, cloudKey, url, sha256],
     );
+    await client.query(
+      `
+        INSERT INTO cms.audit_log (actor, action, entity_table, entity_id, after_data)
+        VALUES ('api', 'invoice.pdf_saved', 'invoice_documents', $1, $2::jsonb)
+      `,
+      [
+        String(document.rows[0].id),
+        JSON.stringify({
+          invoiceNumber,
+          fileName,
+          cloudKey,
+          url,
+          sha256,
+        }),
+      ],
+    );
     await client.query("COMMIT");
     return { ok: true, url, document: document.rows[0] };
   } catch (error) {
@@ -543,6 +598,10 @@ async function handle(event) {
 
   if (method === "POST" && path === "/invoices/document") {
     return response(200, await saveInvoiceDocument(parseBody(event)));
+  }
+
+  if (method === "POST" && path === "/inventory/adjust") {
+    return response(200, await adjustInventory(parseBody(event)));
   }
 
   const datasetName = trimSlashes(path);

@@ -1,7 +1,7 @@
 const { app, BrowserWindow, ipcMain, shell } = require("electron");
 const path = require("node:path");
 const { databaseHealth } = require("./database.cjs");
-const { apiRequest, cloudPull, cloudPush } = require("./cloudSync.cjs");
+const { adjustInventory, apiRequest, cloudPull, cloudPush } = require("./cloudSync.cjs");
 
 const isDev = Boolean(process.env.VITE_DEV_SERVER_URL);
 
@@ -22,6 +22,11 @@ ipcMain.handle("invoice:save-document", async (_event, payload) => {
   const result = await apiRequest("/invoices/document", payload);
   if (!result) throw new Error("API_BASE_URL is not configured.");
   return result;
+});
+ipcMain.handle("inventory:adjust", async (_event, payload) => {
+  const result = await apiRequest("/inventory/adjust", payload);
+  if (result) return result;
+  return adjustInventory(payload);
 });
 
 function createWindow() {

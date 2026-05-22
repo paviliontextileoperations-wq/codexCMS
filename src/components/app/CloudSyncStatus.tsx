@@ -41,6 +41,13 @@ function lastSyncText(language: string, value?: number) {
   return `Last sync ${time}`;
 }
 
+function pendingText(language: string, count?: number) {
+  if (!count) return "";
+  if (language === "zh") return `${count} 项待同步`;
+  if (language === "es") return `${count} pendiente${count === 1 ? "" : "s"}`;
+  return `${count} pending`;
+}
+
 export function CloudSyncStatus() {
   const { language } = useI18n();
   const status = useCloudSyncStatus();
@@ -48,8 +55,9 @@ export function CloudSyncStatus() {
   const syncing = status.phase === "syncing" || status.phase === "connecting";
   const label = labelFor(language, status.phase, status.enabled);
   const lastSync = lastSyncText(language, status.lastSyncAt);
+  const pending = pendingText(language, status.pendingCount);
   const Icon = !status.enabled || status.phase === "offline" ? CloudOff : syncing ? RefreshCw : Cloud;
-  const title = status.message ? `${label} - ${status.message}` : lastSync || label;
+  const title = [status.message ? `${label} - ${status.message}` : label, lastSync, pending].filter(Boolean).join(" / ");
 
   return (
     <button
@@ -65,7 +73,9 @@ export function CloudSyncStatus() {
     >
       <Icon className={cn("h-3.5 w-3.5", syncing && "animate-spin")} />
       <span className="hidden md:inline">{label}</span>
-      {lastSync && active ? (
+      {pending ? (
+        <span className="hidden text-bauhaus-red xl:inline">{pending}</span>
+      ) : lastSync && active ? (
         <span className="hidden text-muted-foreground xl:inline">
           {new Date(status.lastSyncAt).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}
         </span>

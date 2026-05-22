@@ -38,6 +38,14 @@ function labelFor(key: string): string {
       return "Approvals";
     case "form.inventory.v1":
       return "Inventory log";
+    case "form.inventoryMovements.v1":
+      return "Inventory movements";
+    case "form.inventoryLocations.v1":
+      return "Inventory locations";
+    case "form.imageGallery.v1":
+      return "Image gallery";
+    case "form.productMaintenance.v1":
+      return "Product maintenance";
     default:
       return key;
   }
@@ -86,6 +94,10 @@ const TRACKED = new Set([
   "form.accounts.v1",
   "form.approvals.v1",
   "form.inventory.v1",
+  "form.inventoryMovements.v1",
+  "form.inventoryLocations.v1",
+  "form.imageGallery.v1",
+  "form.productMaintenance.v1",
 ]);
 
 function stripLargeMedia(value: unknown): unknown {

@@ -74,5 +74,30 @@ interface Window {
       document?: Record<string, unknown>;
       url?: string;
     }>;
+    adjustInventory: (payload: {
+      id?: string;
+      productId: string;
+      sku?: string;
+      movementType: string;
+      previousQty?: number;
+      quantityChange: number;
+      newQty: number;
+      reason?: string;
+      warehouse?: string;
+      location?: string;
+      notes?: string;
+      actor?: string;
+      documentId?: string;
+    }) => Promise<{
+      ok: boolean;
+      movement?: {
+        id?: string;
+        createdAt?: number;
+        [key: string]: unknown;
+      };
+      previousQty?: number;
+      quantityChange?: number;
+      newQty?: number;
+    }>;
   };
 }

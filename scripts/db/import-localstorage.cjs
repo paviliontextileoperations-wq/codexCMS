@@ -88,6 +88,62 @@ function slugPart(value, fallback) {
   return clean || fallback;
 }
 
+function uuidOrNull(value) {
+  const text = String(value || "");
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{12}$/i.test(text)
+    ? text
+    : null;
+}
+
+function warehouseCodeFor(value) {
+  const text = String(value || "").trim().toLowerCase();
+  if (text === "shop" || text === "shop floor" || text === "sala de ventas") return "SHOP";
+  if (text === "returns" || text === "returns area" || text === "zona de devoluciones") return "RETURNS";
+  const raw = String(value || "").trim();
+  if (/^[A-Z0-9_-]+$/.test(raw) && raw.length <= 16) return raw.toUpperCase();
+  return "MAIN";
+}
+
+function warehouseNameFor(code) {
+  if (code === "SHOP") return "Shop Floor";
+  if (code === "RETURNS") return "Returns Area";
+  return "Main Warehouse";
+}
+
+async function ensureWarehouseAndLocation(client, warehouseInput, locationInput) {
+  const warehouseCode = warehouseCodeFor(warehouseInput);
+  const warehouse = await client.query(
+    `
+      INSERT INTO cms.warehouses (code, name, country)
+      VALUES ($1, $2, 'Spain')
+      ON CONFLICT (code) DO UPDATE SET
+        name = EXCLUDED.name,
+        updated_at = now()
+      RETURNING id, code
+    `,
+    [warehouseCode, warehouseNameFor(warehouseCode)],
+  );
+  const warehouseId = warehouse.rows[0].id;
+  const locationCode = String(locationInput || "A-01-01").trim() || "A-01-01";
+  const location = await client.query(
+    `
+      INSERT INTO cms.warehouse_locations (warehouse_id, location_code, location_label)
+      VALUES ($1, $2, $2)
+      ON CONFLICT (warehouse_id, location_code) DO UPDATE SET
+        location_label = EXCLUDED.location_label,
+        updated_at = now()
+      RETURNING id, location_code
+    `,
+    [warehouseId, locationCode],
+  );
+  return {
+    warehouseId,
+    warehouseCode,
+    locationId: location.rows[0].id,
+    locationCode,
+  };
+}
+
 function parseImageName(fileName) {
   const parsed = String(fileName ?? "").match(IMAGE_FILENAME_RE);
   if (!parsed) return null;
@@ -914,6 +970,9 @@ async function importImageGallery(client, images, productIndex) {
       nullIfBlank(image.directory) ??
       ["women", slugPart(category, "uncategorized"), slugPart(fineCategory, "general"), modelCode, skuCode].join("/");
     const imageRole = oneOf(image.imageRole ?? imageRoleFromCode(code), IMAGE_ROLES, "other");
+    const imageUrl = String(image.dataUrl ?? image.url ?? "").startsWith("http")
+      ? (image.dataUrl ?? image.url)
+      : null;
     const directoryId = await upsertImageDirectory(client, directoryKey, {
       category,
       fineCategory,
@@ -949,33 +1008,66 @@ async function importImageGallery(client, images, productIndex) {
         imageRole,
         fileName,
         `${directoryKey}/${fileName}`,
-        String(image.dataUrl ?? image.url ?? "").startsWith("http") ? (image.dataUrl ?? image.url) : null,
+        imageUrl,
         image.createdAt ? toDate(image.createdAt) : new Date(),
       ],
     );
+    const shouldUseAsMain = imageRole === "front" || imageRole === "model_front";
+    if (imageUrl && lookup?.skuId) {
+      await client.query(
+        `
+          UPDATE cms.skus
+          SET image_url = $1, updated_at = now()
+          WHERE id = $2
+            AND ($3::boolean OR image_url IS NULL OR image_url = '')
+        `,
+        [imageUrl, lookup.skuId, shouldUseAsMain],
+      );
+    }
+    if (imageUrl && lookup?.productId) {
+      await client.query(
+        `
+          UPDATE cms.products
+          SET main_picture_url = $1, updated_at = now()
+          WHERE id = $2
+            AND ($3::boolean OR main_picture_url IS NULL OR main_picture_url = '')
+        `,
+        [imageUrl, lookup.productId, shouldUseAsMain],
+      );
+    }
   }
 }
 
 async function importInventoryMovements(client, inventoryMovements, skuMap) {
+  const latestBalanceByKey = new Map();
   for (const movement of inventoryMovements) {
     const skuId = skuMap.get(movement.productId);
     if (!skuId) {
       continue;
     }
+    const warehouseLocation = await ensureWarehouseAndLocation(client, movement.warehouse, movement.location);
+    const createdAt = toDate(movement.createdAt);
+    const documentUuid = uuidOrNull(movement.documentId);
+    const newQty = movement.newQty === undefined ? null : Math.max(0, Math.round(toNumber(movement.newQty, 0)));
 
     await client.query(
       `
         INSERT INTO cms.inventory_movements (
           legacy_id, sku_id, movement_type, document_id, previous_qty,
-          quantity_change, new_qty, reason_category, notes, created_by, created_at
-        ) VALUES ($1, $2, $3, null, $4, $5, $6, $7, $8, 'desktop-import', $9)
+          quantity_change, new_qty, reason_category, warehouse_id, location_id,
+          external_reference, notes, created_by, created_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'desktop-import', $13)
         ON CONFLICT (legacy_id) DO UPDATE SET
           sku_id = EXCLUDED.sku_id,
           movement_type = EXCLUDED.movement_type,
+          document_id = EXCLUDED.document_id,
           previous_qty = EXCLUDED.previous_qty,
           quantity_change = EXCLUDED.quantity_change,
           new_qty = EXCLUDED.new_qty,
           reason_category = EXCLUDED.reason_category,
+          warehouse_id = EXCLUDED.warehouse_id,
+          location_id = EXCLUDED.location_id,
+          external_reference = EXCLUDED.external_reference,
           notes = EXCLUDED.notes
       `,
       [
@@ -986,12 +1078,52 @@ async function importInventoryMovements(client, inventoryMovements, skuMap) {
           new Set(["sale", "return", "cancel_restore", "adjustment", "initial_import", "inbound", "outbound", "stocktake", "transfer"]),
           "adjustment",
         ),
+        documentUuid,
         movement.previousQty === undefined ? null : Math.round(toNumber(movement.previousQty, 0)),
         Math.round(toNumber(movement.quantityChange, 0)),
-        movement.newQty === undefined ? null : Math.round(toNumber(movement.newQty, 0)),
+        newQty,
         nullIfBlank(movement.reason),
+        warehouseLocation.warehouseId,
+        warehouseLocation.locationId,
+        documentUuid ? null : nullIfBlank(movement.documentId),
         nullIfBlank(movement.notes),
-        toDate(movement.createdAt),
+        createdAt,
+      ],
+    );
+    if (newQty !== null) {
+      const key = `${skuId}|${warehouseLocation.warehouseId}|${warehouseLocation.locationId}`;
+      const current = latestBalanceByKey.get(key);
+      if (!current || createdAt.getTime() >= current.createdAt.getTime()) {
+        latestBalanceByKey.set(key, {
+          skuId,
+          warehouseId: warehouseLocation.warehouseId,
+          locationId: warehouseLocation.locationId,
+          newQty,
+          movementType: movement.movementType,
+          createdAt,
+        });
+      }
+    }
+  }
+
+  for (const balance of latestBalanceByKey.values()) {
+    await client.query(
+      `
+        INSERT INTO cms.sku_inventory_balances (
+          sku_id, warehouse_id, location_id, qty, last_counted_at
+        ) VALUES ($1, $2, $3, $4, CASE WHEN $5 THEN $6 ELSE null END)
+        ON CONFLICT (sku_id, warehouse_id, location_id) DO UPDATE SET
+          qty = EXCLUDED.qty,
+          last_counted_at = CASE WHEN $5 THEN EXCLUDED.last_counted_at ELSE cms.sku_inventory_balances.last_counted_at END,
+          updated_at = now()
+      `,
+      [
+        balance.skuId,
+        balance.warehouseId,
+        balance.locationId,
+        balance.newQty,
+        balance.movementType === "stocktake",
+        balance.createdAt,
       ],
     );
   }

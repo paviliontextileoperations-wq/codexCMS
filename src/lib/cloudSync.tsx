@@ -48,6 +48,7 @@ type CloudSyncStatus = {
   phase: CloudSyncPhase;
   message?: string;
   lastSyncAt?: number;
+  pendingCount?: number;
 };
 
 type CloudRecord = {
@@ -179,7 +180,7 @@ export function CloudSyncProvider({ children }: { children: ReactNode }) {
           continue;
         }
         const nextRaw =
-          mergeableArrayKeys.has(record.key) && current
+          record.clientId !== "normalized-hydration" && mergeableArrayKeys.has(record.key) && current
             ? mergeArrayRaw(current, record.raw)
             : record.raw;
         if (current !== nextRaw) {
@@ -202,6 +203,7 @@ export function CloudSyncProvider({ children }: { children: ReactNode }) {
       enabled: true,
       phase: "online",
       lastSyncAt: Date.now(),
+      pendingCount: dirtyRef.current ? collectRecords().length : 0,
     });
   }, [applyRemoteRecords, desktopApp, enabled]);
 
@@ -219,6 +221,7 @@ export function CloudSyncProvider({ children }: { children: ReactNode }) {
         enabled: true,
         phase: "online",
         lastSyncAt: Date.now(),
+        pendingCount: 0,
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Cloud sync failed";
@@ -227,6 +230,7 @@ export function CloudSyncProvider({ children }: { children: ReactNode }) {
         ready: true,
         phase: "offline",
         message,
+        pendingCount: records.length,
       }));
     } finally {
       syncingRef.current = false;
@@ -236,6 +240,11 @@ export function CloudSyncProvider({ children }: { children: ReactNode }) {
   const schedulePush = useCallback(() => {
     if (!enabled) return;
     dirtyRef.current = true;
+    setStatus((current) => ({
+      ...current,
+      ready: true,
+      pendingCount: collectRecords().length,
+    }));
     window.clearTimeout(pushTimerRef.current);
     pushTimerRef.current = window.setTimeout(() => {
       void pushNow();
@@ -284,6 +293,7 @@ export function CloudSyncProvider({ children }: { children: ReactNode }) {
           enabled: true,
           phase: "offline",
           message,
+          pendingCount: collectRecords().length,
         });
       })
       .finally(() => window.clearTimeout(initialTimer));
@@ -296,6 +306,7 @@ export function CloudSyncProvider({ children }: { children: ReactNode }) {
           ready: true,
           phase: "offline",
           message,
+          pendingCount: collectRecords().length,
         }));
       });
     }, PULL_INTERVAL_MS);
@@ -342,6 +353,7 @@ export function useCloudSyncStatus() {
       phase: "local" as CloudSyncPhase,
       message: undefined,
       lastSyncAt: undefined,
+      pendingCount: 0,
       syncNow: async () => undefined,
     };
   }

@@ -119,6 +119,7 @@ export function InventoryView() {
   const [warehouse, setWarehouse] = useState("Main Warehouse");
   const [location, setLocation] = useState("A-01-01");
   const [note, setNote] = useState("");
+  const [isUpdating, setIsUpdating] = useState(false);
 
   const locationByProduct = useMemo(
     () => new Map(locations.map((item) => [item.productId, item])),
@@ -205,33 +206,72 @@ export function InventoryView() {
 
   const projected = selected ? calculateStock(selected.stock, operation, quantity) : null;
 
-  function applyInventoryUpdate() {
-    if (!selected) return;
+  async function applyInventoryUpdate() {
+    if (!selected || isUpdating) return;
     const result = calculateStock(selected.stock, operation, quantity);
     if (!result.ok) {
       toast.error(result.message);
       return;
     }
 
-    const nextProduct = { ...selected, stock: result.nextQty };
+    const movementId = `inv-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const trimmedWarehouse = warehouse.trim() || "Main Warehouse";
+    const trimmedLocation = location.trim() || "A-01-01";
+    let previousQty = selected.stock;
+    let quantityChange = result.delta;
+    let nextQty = result.nextQty;
+    let remoteCreatedAt: number | undefined;
+
+    setIsUpdating(true);
+    try {
+      const remote = await window.desktopApp?.adjustInventory?.({
+        id: movementId,
+        productId: selected.id,
+        sku: selected.sku,
+        movementType: operation,
+        previousQty: selected.stock,
+        quantityChange: result.delta,
+        newQty: result.nextQty,
+        reason,
+        warehouse: trimmedWarehouse,
+        location: trimmedLocation,
+        notes: note.trim() || undefined,
+        actor: "desktop",
+      });
+      if (remote?.ok) {
+        previousQty = remote.previousQty ?? previousQty;
+        quantityChange = remote.quantityChange ?? quantityChange;
+        nextQty = remote.newQty ?? nextQty;
+        remoteCreatedAt = remote.movement?.createdAt;
+      }
+    } catch (error) {
+      console.warn("Cloud inventory transaction failed; keeping local fallback.", error);
+      toast.warning("Cloud inventory transaction failed. Saved locally and queued for sync.");
+    } finally {
+      setIsUpdating(false);
+    }
+
+    const nextProduct = { ...selected, stock: nextQty };
     productsStore.upsert(nextProduct);
-    inventoryLocationStore.set(selected.id, warehouse.trim() || "Main Warehouse", location.trim() || "A-01-01");
+    inventoryLocationStore.set(selected.id, trimmedWarehouse, trimmedLocation);
     inventoryStore.log({
+      id: movementId,
       productId: selected.id,
       sku: selected.sku,
       movementType: operation,
-      previousQty: selected.stock,
-      quantityChange: result.delta,
-      newQty: result.nextQty,
+      previousQty,
+      quantityChange,
+      newQty: nextQty,
       reason,
-      warehouse: warehouse.trim() || "Main Warehouse",
-      location: location.trim() || "A-01-01",
+      warehouse: trimmedWarehouse,
+      location: trimmedLocation,
       notes: note.trim() || undefined,
+      createdAt: remoteCreatedAt,
     });
 
     toast.success("Inventory updated");
     setNote("");
-    setQuantity(operation === "stocktake" || operation === "adjustment" ? String(result.nextQty) : "1");
+    setQuantity(operation === "stocktake" || operation === "adjustment" ? String(nextQty) : "1");
   }
 
   return (
@@ -445,8 +485,8 @@ export function InventoryView() {
                     </div>
                   </div>
 
-                  <Button onClick={applyInventoryUpdate} className="w-full">
-                    Update inventory
+                  <Button onClick={applyInventoryUpdate} className="w-full" disabled={isUpdating}>
+                    {isUpdating ? "Updating..." : "Update inventory"}
                   </Button>
                 </div>
               </>
