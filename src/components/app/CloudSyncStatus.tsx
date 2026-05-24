@@ -9,25 +9,21 @@ function labelFor(language: string, phase: string, enabled: boolean) {
     if (language === "es") return "Local";
     return "Local";
   }
-
   if (phase === "connecting") {
     if (language === "zh") return "连接中";
     if (language === "es") return "Conectando";
     return "Connecting";
   }
-
   if (phase === "syncing") {
     if (language === "zh") return "同步中";
     if (language === "es") return "Sincronizando";
     return "Syncing";
   }
-
   if (phase === "offline") {
     if (language === "zh") return "离线";
-    if (language === "es") return "Sin conexión";
+    if (language === "es") return "Sin conexion";
     return "Offline";
   }
-
   if (language === "zh") return "云端";
   if (language === "es") return "Nube";
   return "Cloud";
@@ -37,7 +33,7 @@ function lastSyncText(language: string, value?: number) {
   if (!value) return "";
   const time = new Date(value).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
   if (language === "zh") return `最后同步 ${time}`;
-  if (language === "es") return `Ultima sync ${time}`;
+  if (language === "es") return `Ultima sincronizacion ${time}`;
   return `Last sync ${time}`;
 }
 
@@ -67,7 +63,7 @@ export function CloudSyncStatus() {
         "inline-flex h-8 items-center gap-1.5 border px-2 text-[10px] uppercase tracking-[0.16em] transition-colors",
         active
           ? "border-foreground/20 text-foreground hover:border-foreground"
-          : "border-bauhaus-red/40 text-bauhaus-red hover:border-bauhaus-red hover:text-bauhaus-red",
+          : "border-bauhaus-red bg-bauhaus-red/10 text-bauhaus-red hover:border-bauhaus-red hover:text-bauhaus-red",
       )}
       title={title}
     >

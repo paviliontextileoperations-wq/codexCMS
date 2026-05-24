@@ -1,7 +1,15 @@
 const { app, BrowserWindow, ipcMain, shell } = require("electron");
 const path = require("node:path");
 const { databaseHealth } = require("./database.cjs");
-const { adjustInventory, apiRequest, cloudPull, cloudPush } = require("./cloudSync.cjs");
+const {
+  adjustInventory,
+  allocateSerial,
+  apiRequest,
+  cloudPull,
+  cloudPush,
+  reconcileInventoryBalances,
+  saveSaleToDatabase,
+} = require("./cloudSync.cjs");
 
 const isDev = Boolean(process.env.VITE_DEV_SERVER_URL);
 
@@ -26,7 +34,22 @@ ipcMain.handle("invoice:save-document", async (_event, payload) => {
 ipcMain.handle("inventory:adjust", async (_event, payload) => {
   const result = await apiRequest("/inventory/adjust", payload);
   if (result) return result;
-  return adjustInventory(payload);
+  return adjustInventory({ ...payload, skipApi: true });
+});
+ipcMain.handle("inventory:reconcile", async (_event, payload) => {
+  const result = await apiRequest("/inventory/reconcile", payload);
+  if (result) return result;
+  return reconcileInventoryBalances({ ...payload, skipApi: true });
+});
+ipcMain.handle("serial:next", async (_event, payload) => {
+  const result = await apiRequest("/serial/next", payload);
+  if (result) return result;
+  return allocateSerial({ ...payload, skipApi: true });
+});
+ipcMain.handle("sales:save", async (_event, payload) => {
+  const result = await apiRequest("/sales/save", payload);
+  if (result) return result;
+  return saveSaleToDatabase({ ...payload, skipApi: true });
 });
 
 function createWindow() {

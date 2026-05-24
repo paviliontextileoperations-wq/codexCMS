@@ -197,7 +197,7 @@ export const salesStore = {
   save(list: Sale[]) {
     writeList(KEYS.sales, list);
   },
-  create(sale: Omit<Sale, "id" | "invoiceNumber" | "createdAt">): Sale {
+  create(sale: Omit<Sale, "id" | "invoiceNumber" | "createdAt"> & { invoiceNumber?: string }): Sale {
     const id = nanoid(12);
     const now = Date.now();
     const isPaid = sale.paymentStatus === "PAID";
@@ -208,7 +208,9 @@ export const salesStore = {
       id,
       // Proformas receive their own serial immediately. Other open / partial
       // documents stay as drafts until paid, so invoice numbers are not consumed early.
-      invoiceNumber: assignSerialNow
+      invoiceNumber: sale.invoiceNumber
+        ? sale.invoiceNumber
+        : assignSerialNow
         ? consumeNextSerial(sale.documentType ?? "INVOICE")
         : `DRAFT-${id.slice(0, 6).toUpperCase()}`,
       documentStatus: sale.documentStatus ?? "open",
@@ -272,7 +274,7 @@ export const salesStore = {
   /** Add a payment with optional explicit date / reference. */
   recordPaymentDetailed(
     saleId: string,
-    payload: { amount: number; method: PaymentMethod; reference?: string; note?: string; paymentDate?: number },
+    payload: { amount: number; method: PaymentMethod; reference?: string; note?: string; paymentDate?: number; invoiceNumber?: string },
   ): Sale | undefined {
     const list = this.all();
     const idx = list.findIndex((s) => s.id === saleId);
@@ -294,7 +296,7 @@ export const salesStore = {
       amountDue <= 0.0001 ? "PAID" : amountPaid > 0 ? "PARTIAL" : "OPEN";
     const invoiceNumber =
       paymentStatus === "PAID" && s.invoiceNumber.startsWith("DRAFT-")
-        ? consumeNextSerial(s.documentType ?? "INVOICE")
+        ? payload.invoiceNumber ?? consumeNextSerial(s.documentType ?? "INVOICE")
         : s.invoiceNumber;
     const updated: Sale = { ...s, payments, amountPaid, amountDue, paymentStatus, invoiceNumber, updatedAt: Date.now() };
     list[idx] = updated;
@@ -342,7 +344,7 @@ export const salesStore = {
     return updated;
   },
   /** Convert a delivery note (or proforma) to an INVOICE without re-deducting stock. */
-  convertToInvoice(saleId: string): Sale | undefined {
+  convertToInvoice(saleId: string, invoiceNumber?: string): Sale | undefined {
     const list = this.all();
     const src = list.find((s) => s.id === saleId);
     if (!src) return;
@@ -357,7 +359,7 @@ export const salesStore = {
       sourceDocumentId: src.id,
       // Stock was already moved on the source document; do NOT double-deduct.
       stockMovementCreated: false,
-      invoiceNumber: isPaid ? consumeNextSerial("INVOICE") : `DRAFT-${newId.slice(0, 6).toUpperCase()}`,
+      invoiceNumber: isPaid ? invoiceNumber ?? consumeNextSerial("INVOICE") : `DRAFT-${newId.slice(0, 6).toUpperCase()}`,
       createdAt: Date.now(),
       updatedAt: Date.now(),
     };

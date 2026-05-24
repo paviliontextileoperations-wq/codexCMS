@@ -27,6 +27,13 @@ import { getB2cUnitPrice, getDefaultB2cMarkupPercent } from "@/lib/productSettin
 import { normalizeProductCode } from "@/lib/productCodes";
 import { generateShippingLabelPdf } from "@/lib/shippingLabelPdf";
 import { maintenanceStore } from "@/lib/maintenanceStore";
+import {
+  allocateDocumentSerial,
+  cloudSalesAvailable,
+  restoreSalesState,
+  saveSaleToCloud,
+  snapshotSalesState,
+} from "@/lib/cloudSales";
 
 type PaymentChoice = "FULL" | "PARTIAL" | "OPEN";
 
@@ -402,7 +409,7 @@ export function POSView() {
     setPaymentOpen(true);
   }
 
-  function finalize() {
+  async function finalize() {
     if (!customer || lines.length === 0) return;
 
     let amountPaid = 0;
@@ -430,9 +437,21 @@ export function POSView() {
       paymentStatus = "OPEN";
     }
     const amountDue = Math.max(0, total - amountPaid);
+    const documentType = MODE_DOC[priceMode];
+    let invoiceNumber: string | undefined;
+    if (cloudSalesAvailable() && (paymentStatus === "PAID" || documentType === "PROFORMA")) {
+      try {
+        invoiceNumber = await allocateDocumentSerial(documentType) ?? undefined;
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : "Could not allocate cloud document number");
+        return;
+      }
+    }
 
+    const snapshot = snapshotSalesState();
     const sale = salesStore.create({
-      documentType: MODE_DOC[priceMode],
+      documentType,
+      invoiceNumber,
       customerId: customer.id,
       customerSnapshot: {
         name: customer.name, phone: customer.phone, email: customer.email,
@@ -458,6 +477,13 @@ export function POSView() {
       },
       paymentStatus, amountPaid, amountDue, payments,
     });
+    try {
+      await saveSaleToCloud(sale, { operation: "create", actor: "pos" });
+    } catch (error) {
+      restoreSalesState(snapshot);
+      toast.error(error instanceof Error ? error.message : "Cloud database save failed");
+      return;
+    }
     setCreatedSale(sale);
     setPaymentOpen(false);
     if (paymentStatus === "PAID") {

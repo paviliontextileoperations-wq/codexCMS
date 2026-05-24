@@ -1,4 +1,5 @@
 import { createContext, ReactNode, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { scheduleInvoicePdfBackfill } from "./invoiceBackfill";
 
 const CLIENT_ID_KEY = "app.cloud.clientId";
 const CLOUD_READY_KEY = "app.cloud.ready";
@@ -198,6 +199,8 @@ export function CloudSyncProvider({ children }: { children: ReactNode }) {
     if (!enabled || !desktopApp?.cloudPull) return;
     const result = await desktopApp.cloudPull({ keys: [...CLOUD_SYNC_KEYS] });
     applyRemoteRecords(result.records);
+    void desktopApp.reconcileInventory?.({ actor: "cloud-sync" }).catch(() => undefined);
+    scheduleInvoicePdfBackfill();
     setStatus({
       ready: true,
       enabled: true,

@@ -99,5 +99,33 @@ interface Window {
       quantityChange?: number;
       newQty?: number;
     }>;
+    reconcileInventory: (payload?: {
+      actor?: string;
+    }) => Promise<{
+      ok: boolean;
+      balances?: number;
+    }>;
+    allocateSerial: (payload: {
+      documentType: "INVOICE" | "RECEIPT" | "DELIVERY_NOTE" | "PROFORMA";
+      prefix?: string;
+      counter?: number;
+    }) => Promise<{
+      ok: boolean;
+      documentType: string;
+      serial: string;
+      nextCounter: number;
+    }>;
+    saveSale: (payload: {
+      sale: unknown;
+      previousSale?: unknown;
+      operation?: string;
+      actor?: string;
+    }) => Promise<{
+      ok: boolean;
+      sale?: unknown;
+      orderId?: string;
+      invoiceId?: string;
+      serverTime?: string;
+    }>;
   };
 }

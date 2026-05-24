@@ -10,4 +10,7 @@ contextBridge.exposeInMainWorld("desktopApp", {
   registerImageAsset: (payload) => ipcRenderer.invoke("image:register-asset", payload),
   saveInvoiceDocument: (payload) => ipcRenderer.invoke("invoice:save-document", payload),
   adjustInventory: (payload) => ipcRenderer.invoke("inventory:adjust", payload),
+  reconcileInventory: (payload) => ipcRenderer.invoke("inventory:reconcile", payload),
+  allocateSerial: (payload) => ipcRenderer.invoke("serial:next", payload),
+  saveSale: (payload) => ipcRenderer.invoke("sales:save", payload),
 });

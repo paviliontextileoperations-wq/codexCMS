@@ -45,6 +45,13 @@ import { getDefaultTransportFee } from "@/lib/transportSettings";
 import { getB2cUnitPrice } from "@/lib/productSettings";
 import { normalizeProductCode } from "@/lib/productCodes";
 import { generateShippingLabelPdf } from "@/lib/shippingLabelPdf";
+import {
+  allocateDocumentSerial,
+  cloudSalesAvailable,
+  restoreSalesState,
+  saveSaleToCloud,
+  snapshotSalesState,
+} from "@/lib/cloudSales";
 
 function statusOf(s: Sale): PaymentStatus {
   return s.paymentStatus ?? "PAID";
@@ -259,11 +266,26 @@ export function SalesView() {
     setScanCode("");
     toast.success(`Added · ${p.name}`);
   }
-  function saveLineEdits() {
+  async function saveLineEdits() {
     if (!viewSale || !editLines) return;
     if (editLines.length === 0) { toast.error("Order must have at least one line"); return; }
+    const previousSale = viewSale;
+    const snapshot = snapshotSalesState();
     const updated = salesStore.updateLines(viewSale.id, editLines, editTransport ?? undefined);
-    if (updated) { setViewSale(updated); toast.success("Order updated"); }
+    if (!updated) return;
+    try {
+      await saveSaleToCloud(updated, {
+        previousSale,
+        operation: "update_lines",
+        actor: session?.username,
+      });
+    } catch (error) {
+      restoreSalesState(snapshot);
+      toast.error(error instanceof Error ? error.message : "Cloud database save failed");
+      return;
+    }
+    setViewSale(updated);
+    toast.success("Order updated");
   }
   function discardLineEdits() {
     if (!viewSale) return;
@@ -326,7 +348,7 @@ export function SalesView() {
     setPayDate(new Date().toISOString().slice(0, 10));
   }
 
-  function convertProformaToInvoice(s: Sale): Sale | undefined {
+  async function convertProformaToInvoice(s: Sale): Promise<Sale | undefined> {
     if ((s.documentType ?? "INVOICE") !== "PROFORMA") return undefined;
     if (s.paymentStatus !== "PAID") {
       toast.error("Proforma must be fully paid before invoice conversion");
@@ -336,9 +358,30 @@ export function SalesView() {
       toast.error("Only open proformas can be converted");
       return undefined;
     }
-    const invoice = salesStore.convertToInvoice(s.id);
+    let invoiceNumber: string | undefined;
+    if (cloudSalesAvailable()) {
+      try {
+        invoiceNumber = await allocateDocumentSerial("INVOICE") ?? undefined;
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : "Could not allocate cloud invoice number");
+        return undefined;
+      }
+    }
+    const snapshot = snapshotSalesState();
+    const invoice = salesStore.convertToInvoice(s.id, invoiceNumber);
     if (!invoice) {
       toast.error("Could not generate invoice");
+      return undefined;
+    }
+    try {
+      const convertedSource = salesStore.all().find((item) => item.id === s.id);
+      if (convertedSource) {
+        await saveSaleToCloud(convertedSource, { previousSale: s, operation: "convert", actor: session?.username });
+      }
+      await saveSaleToCloud(invoice, { operation: "convert", actor: session?.username });
+    } catch (error) {
+      restoreSalesState(snapshot);
+      toast.error(error instanceof Error ? error.message : "Cloud database save failed");
       return undefined;
     }
     generateInvoicePdf(invoice);
@@ -346,26 +389,46 @@ export function SalesView() {
     return invoice;
   }
 
-  function submitPay() {
+  async function submitPay() {
     if (!payFor) return;
     const n = parseFloat(payAmount);
     if (!Number.isFinite(n) || n <= 0) { toast.error("Enter a valid amount"); return; }
     const due = payFor.amountDue ?? payFor.total;
     if (n > due + 0.0001) { toast.error("Amount exceeds pending"); return; }
     const dateMs = payDate ? new Date(payDate).getTime() : Date.now();
+    let invoiceNumber: string | undefined;
+    const willIssue = n >= due - 0.0001 && payFor.invoiceNumber.startsWith("DRAFT-");
+    if (cloudSalesAvailable() && willIssue) {
+      try {
+        invoiceNumber = await allocateDocumentSerial(payFor.documentType ?? "INVOICE") ?? undefined;
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : "Could not allocate cloud document number");
+        return;
+      }
+    }
+    const snapshot = snapshotSalesState();
     const updated = salesStore.recordPaymentDetailed(payFor.id, {
       amount: n,
       method: payMethod,
       reference: payReference.trim() || undefined,
       paymentDate: Number.isFinite(dateMs) ? dateMs : Date.now(),
+      invoiceNumber,
     });
+    if (!updated) return;
+    try {
+      await saveSaleToCloud(updated, { previousSale: payFor, operation: "payment", actor: session?.username });
+    } catch (error) {
+      restoreSalesState(snapshot);
+      toast.error(error instanceof Error ? error.message : "Cloud database save failed");
+      return;
+    }
     toast.success("Payment recorded");
     if (
       updated &&
       updated.paymentStatus === "PAID"
     ) {
       if ((updated.documentType ?? "INVOICE") === "PROFORMA") {
-        convertProformaToInvoice(updated);
+        await convertProformaToInvoice(updated);
       } else {
         generateInvoicePdf(updated);
         toast.success(`${updated.invoiceNumber} · document issued`);
@@ -374,7 +437,7 @@ export function SalesView() {
     setPayFor(null);
   }
 
-  function removeOrCancelSale(s: Sale) {
+  async function removeOrCancelSale(s: Sale) {
     if (!session) return;
     const isDraft = (s.invoiceNumber ?? "").startsWith("DRAFT-");
     // Confirmed sales (with a real document number) should NEVER be hard-deleted.
@@ -382,7 +445,16 @@ export function SalesView() {
     if (!isDraft) {
       const reason = prompt(`Cancel sale ${s.invoiceNumber}? Enter a reason (required):`);
       if (!reason) return;
-      salesStore.cancel(s.id, reason, session.username);
+      const snapshot = snapshotSalesState();
+      const updated = salesStore.cancel(s.id, reason, session.username);
+      if (!updated) return;
+      try {
+        await saveSaleToCloud(updated, { previousSale: s, operation: "cancel", actor: session.username });
+      } catch (error) {
+        restoreSalesState(snapshot);
+        toast.error(error instanceof Error ? error.message : "Cloud database save failed");
+        return;
+      }
       toast.success(`${s.invoiceNumber} cancelled`);
       return;
     }
@@ -411,7 +483,7 @@ export function SalesView() {
     const firstLine = s.lines[0];
     setReturnRefund(firstLine ? (firstLine.unitPrice * (1 - (firstLine.discountPct ?? 0) / 100)).toFixed(2) : "");
   }
-  function submitReturn() {
+  async function submitReturn() {
     if (!returnFor) return;
     const line = returnFor.lines.find((l) => l.productId === returnLineId);
     if (!line) { toast.error("Pick a line to return"); return; }
@@ -422,7 +494,8 @@ export function SalesView() {
     }
     const refund = parseFloat(returnRefund);
     if (!Number.isFinite(refund) || refund < 0) { toast.error("Enter a valid refund amount"); return; }
-    salesStore.recordReturn(returnFor.id, {
+    const snapshot = snapshotSalesState();
+    const updated = salesStore.recordReturn(returnFor.id, {
       productId: line.productId,
       quantity: qty,
       reason: returnReason,
@@ -430,6 +503,14 @@ export function SalesView() {
       refundAmount: refund,
       stockAction: returnStockAction,
     });
+    if (!updated) return;
+    try {
+      await saveSaleToCloud(updated, { previousSale: returnFor, operation: "return", actor: session?.username });
+    } catch (error) {
+      restoreSalesState(snapshot);
+      toast.error(error instanceof Error ? error.message : "Cloud database save failed");
+      return;
+    }
     toast.success("Return recorded");
     setReturnFor(null);
   }
@@ -564,7 +645,7 @@ export function SalesView() {
                         <Button
                           size="icon"
                           variant="ghost"
-                          onClick={() => convertProformaToInvoice(s)}
+                          onClick={() => void convertProformaToInvoice(s)}
                           title="Generate invoice from proforma"
                         >
                           <FileText />
@@ -833,6 +914,7 @@ export function SalesView() {
                   <Select
                     value={statusOf(viewSale)}
                     onValueChange={(v) => {
+                      void (async () => {
                       const s = viewSale;
                       if (!s) return;
                       const next = v as PaymentStatus;
@@ -841,14 +923,32 @@ export function SalesView() {
                       if (next === "PAID") {
                         const due = s.amountDue ?? Math.max(0, s.total - (s.amountPaid ?? 0));
                         if (due > 0) {
+                          let invoiceNumber: string | undefined;
+                          if (cloudSalesAvailable() && s.invoiceNumber.startsWith("DRAFT-")) {
+                            try {
+                              invoiceNumber = await allocateDocumentSerial(s.documentType ?? "INVOICE") ?? undefined;
+                            } catch (error) {
+                              toast.error(error instanceof Error ? error.message : "Could not allocate cloud document number");
+                              return;
+                            }
+                          }
+                          const snapshot = snapshotSalesState();
                           const updated = salesStore.recordPaymentDetailed(s.id, {
                             amount: due,
                             method: "CASH",
                             note: "Marked as paid",
+                            invoiceNumber,
                           });
                           if (updated) {
+                            try {
+                              await saveSaleToCloud(updated, { previousSale: s, operation: "payment", actor: session?.username });
+                            } catch (error) {
+                              restoreSalesState(snapshot);
+                              toast.error(error instanceof Error ? error.message : "Cloud database save failed");
+                              return;
+                            }
                             if ((updated.documentType ?? "INVOICE") === "PROFORMA") {
-                              const invoice = convertProformaToInvoice(updated);
+                              const invoice = await convertProformaToInvoice(updated);
                               setViewSale(invoice ?? updated);
                             } else {
                               setViewSale(updated);
@@ -859,6 +959,7 @@ export function SalesView() {
                       } else {
                         toast.info("To revert payment, record a refund/return.");
                       }
+                      })();
                     }}
                   >
                     <SelectTrigger className="rounded-none border-2 border-foreground"><SelectValue /></SelectTrigger>
@@ -1080,10 +1181,10 @@ export function SalesView() {
               docStatusOf(viewSale) === "open" && (
                 <Button
                   variant="outline"
-                  onClick={() => {
-                    const invoice = convertProformaToInvoice(viewSale);
+                  onClick={() => void (async () => {
+                    const invoice = await convertProformaToInvoice(viewSale);
                     if (invoice) setViewSale(invoice);
-                  }}
+                  })()}
                 >
                   <FileText /> Generate invoice
                 </Button>

@@ -37,7 +37,7 @@ function safePdfName(value: string) {
 
 export function generateInvoicePdf(
   sale: Sale,
-  options: { allowDraft?: boolean; action?: PdfAction } = {},
+  options: { allowDraft?: boolean; action?: PdfAction | "cloud" } = {},
 ) {
   if (!options.allowDraft && (sale.paymentStatus ?? "PAID") !== "PAID") return false;
 
@@ -334,6 +334,8 @@ export function generateInvoicePdf(
     });
   }
 
-  outputPdfDocument(doc, fileName, options.action ?? "download", sale.invoiceNumber);
+  if (options.action !== "cloud") {
+    outputPdfDocument(doc, fileName, options.action ?? "download", sale.invoiceNumber);
+  }
   return true;
 }

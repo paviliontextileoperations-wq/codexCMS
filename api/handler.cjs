@@ -1,7 +1,14 @@
 const { S3Client, PutObjectCommand } = require("@aws-sdk/client-s3");
 const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 const crypto = require("node:crypto");
-const { adjustInventory, cloudPull, cloudPush } = require("../electron/cloudSync.cjs");
+const {
+  adjustInventory,
+  allocateSerial,
+  cloudPull,
+  cloudPush,
+  reconcileInventoryBalances,
+  saveSaleToDatabase,
+} = require("../electron/cloudSync.cjs");
 const { createDatabaseClient, databaseHealth } = require("../electron/database.cjs");
 
 const REGION = process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION || "eu-south-2";
@@ -601,7 +608,19 @@ async function handle(event) {
   }
 
   if (method === "POST" && path === "/inventory/adjust") {
-    return response(200, await adjustInventory(parseBody(event)));
+    return response(200, await adjustInventory({ ...parseBody(event), skipApi: true }));
+  }
+
+  if (method === "POST" && path === "/inventory/reconcile") {
+    return response(200, await reconcileInventoryBalances({ ...parseBody(event), skipApi: true }));
+  }
+
+  if (method === "POST" && path === "/serial/next") {
+    return response(200, await allocateSerial({ ...parseBody(event), skipApi: true }));
+  }
+
+  if (method === "POST" && path === "/sales/save") {
+    return response(200, await saveSaleToDatabase({ ...parseBody(event), skipApi: true }));
   }
 
   const datasetName = trimSlashes(path);

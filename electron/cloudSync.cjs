@@ -33,6 +33,49 @@ const NORMALIZED_SYNC_KEYS = new Set([
   "form.productMaintenance.v1",
 ]);
 
+const KEY_ALIASES = {
+  "products.v1": "form.products.v1",
+  "customers.v1": "form.customers.v1",
+  "sales.v1": "form.sales.v1",
+  "orders.v1": "form.sales.v1",
+  "inventory.v1": "form.inventoryMovements.v1",
+  "imageGallery.v1": "form.imageGallery.v1",
+};
+
+const DEFAULT_SERIALS = {
+  INVOICE: { prefix: "INV", counter: 1 },
+  RECEIPT: { prefix: "INVC", counter: 1 },
+  DELIVERY_NOTE: { prefix: "A", counter: 1 },
+  PROFORMA: { prefix: "PRO", counter: 1 },
+};
+
+const DOCUMENT_TYPES = new Set(["INVOICE", "DELIVERY_NOTE", "RECEIPT", "PROFORMA"]);
+const DOCUMENT_STATUSES = new Set(["draft", "open", "cancelled", "converted"]);
+const DELIVERY_STATUSES = new Set([
+  "open",
+  "preparing",
+  "pending_pickup",
+  "product_sent",
+  "pending_reception",
+  "completed",
+  "pending_pickup_client",
+  "picked_up_client",
+  "not_prepared",
+  "prepared",
+  "delivered",
+  "returned",
+]);
+const PAYMENT_STATUSES = new Set(["PAID", "PARTIAL", "OPEN"]);
+const PAYMENT_METHODS = new Set(["CARD", "CASH", "TRANSFER", "OTHER"]);
+
+function oneOf(value, allowed, fallback) {
+  return allowed.has(value) ? value : fallback;
+}
+
+function normalizeSyncKeys(keys) {
+  return keys.map((key) => KEY_ALIASES[key] || key);
+}
+
 function apiBaseUrl() {
   loadDotEnv();
   const value = process.env.API_BASE_URL;
@@ -215,6 +258,123 @@ async function ensureWarehouseAndLocation(client, warehouseInput, locationInput)
     locationId: location.rows[0].id,
     locationCode,
   };
+}
+
+async function ensureDocumentSerials(client) {
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS cms.document_serials (
+      document_type text PRIMARY KEY CHECK (document_type IN ('INVOICE', 'RECEIPT', 'DELIVERY_NOTE', 'PROFORMA')),
+      prefix text NOT NULL,
+      next_counter integer NOT NULL DEFAULT 1 CHECK (next_counter > 0),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )
+  `);
+  for (const [documentType, defaults] of Object.entries(DEFAULT_SERIALS)) {
+    await client.query(
+      `
+        INSERT INTO cms.document_serials (document_type, prefix, next_counter)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (document_type) DO NOTHING
+      `,
+      [documentType, defaults.prefix, defaults.counter],
+    );
+  }
+  await client.query(`
+    WITH serial_max AS (
+      SELECT
+        ds.document_type,
+        COALESCE(max(substring(o.order_number from length(ds.prefix) + 2)::integer), 0) + 1 AS next_counter
+      FROM cms.document_serials ds
+      LEFT JOIN cms.orders o
+        ON o.document_type = ds.document_type
+       AND o.order_number ~ ('^' || ds.prefix || '-[0-9]+$')
+      GROUP BY ds.document_type
+    )
+    UPDATE cms.document_serials ds
+    SET next_counter = greatest(ds.next_counter, serial_max.next_counter)
+    FROM serial_max
+    WHERE serial_max.document_type = ds.document_type
+  `);
+}
+
+function formatSerial(prefix, counter) {
+  return `${prefix}-${String(counter).padStart(3, "0")}`;
+}
+
+async function allocateSerialInDatabase(client, payload = {}) {
+  const documentType = oneOf(payload.documentType, DOCUMENT_TYPES, "INVOICE");
+  const defaults = DEFAULT_SERIALS[documentType] ?? DEFAULT_SERIALS.INVOICE;
+  await ensureDocumentSerials(client);
+  await client.query("BEGIN");
+  try {
+    await client.query(
+      `
+        INSERT INTO cms.document_serials (document_type, prefix, next_counter)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (document_type) DO NOTHING
+      `,
+      [documentType, payload.prefix || defaults.prefix, Math.max(1, Math.round(toNumber(payload.counter, defaults.counter)))],
+    );
+    const current = await client.query(
+      `
+        SELECT prefix, next_counter
+        FROM cms.document_serials
+        WHERE document_type = $1
+        FOR UPDATE
+      `,
+      [documentType],
+    );
+    const row = current.rows[0] || defaults;
+    const counter = Math.max(1, Math.round(toNumber(row.next_counter, defaults.counter)));
+    const serial = formatSerial(row.prefix || defaults.prefix, counter);
+    await client.query(
+      `
+        UPDATE cms.document_serials
+        SET next_counter = $2, updated_at = now()
+        WHERE document_type = $1
+      `,
+      [documentType, counter + 1],
+    );
+    await client.query("COMMIT");
+    return { ok: true, documentType, serial, nextCounter: counter + 1 };
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  }
+}
+
+async function allocateSerial(payload = {}) {
+  if (!payload.skipApi) {
+    const apiResult = await apiRequest("/serial/next", payload);
+    if (apiResult) return apiResult;
+  }
+
+  const client = createDatabaseClient();
+  await client.connect();
+  try {
+    return await allocateSerialInDatabase(client, payload);
+  } finally {
+    await client.end().catch(() => undefined);
+  }
+}
+
+async function ensureInventoryBalancesForAllSkus(client) {
+  const { warehouseId, locationId } = await ensureWarehouseAndLocation(client, "MAIN", "A-01-01");
+  await client.query(
+    `
+      INSERT INTO cms.sku_inventory_balances (
+        sku_id, warehouse_id, location_id, qty, min_qty, last_counted_at
+      )
+      SELECT
+        s.id, $1, $2, s.stock_qty, s.low_stock_threshold, now()
+      FROM cms.skus s
+      WHERE NOT EXISTS (
+        SELECT 1 FROM cms.sku_inventory_balances b WHERE b.sku_id = s.id
+      )
+      ON CONFLICT (sku_id, warehouse_id, location_id) DO NOTHING
+    `,
+    [warehouseId, locationId],
+  );
 }
 
 function parseComposition(value) {
@@ -601,6 +761,7 @@ async function loadMaintenanceFromNormalized(client) {
 }
 
 async function hydrateFromNormalized(client) {
+  await ensureInventoryBalancesForAllSkus(client);
   const products = await loadProductsFromNormalized(client);
   const customers = await loadCustomersFromNormalized(client);
   const sales = await loadSalesFromNormalized(client);
@@ -685,7 +846,7 @@ async function cloudPull(payload = {}) {
   const apiResult = await apiRequest("/sync/pull", payload);
   if (apiResult) return apiResult;
 
-  const keys = Array.isArray(payload.keys) && payload.keys.length > 0 ? payload.keys : CORE_KEYS;
+  const keys = Array.isArray(payload.keys) && payload.keys.length > 0 ? normalizeSyncKeys(payload.keys) : CORE_KEYS;
   const client = createDatabaseClient();
   await client.connect();
   try {
@@ -750,6 +911,10 @@ async function cloudPush(payload = {}) {
 }
 
 async function adjustInventory(payload = {}) {
+  if (!payload.skipApi) {
+    const apiResult = await apiRequest("/inventory/adjust", payload);
+    if (apiResult) return apiResult;
+  }
   const allowedTypes = new Set([
     "sale",
     "return",
@@ -934,9 +1099,559 @@ async function adjustInventory(payload = {}) {
   }
 }
 
+function dateOrNow(value) {
+  const date = value ? new Date(value) : new Date();
+  return Number.isFinite(date.getTime()) ? date : new Date();
+}
+
+function lineSubtotal(line) {
+  const quantity = Math.max(1, Math.round(toNumber(line.quantity, 1)));
+  const discount = Math.max(0, Math.min(100, toNumber(line.discountPct, 0)));
+  return toNumber(line.unitPrice, 0) * quantity * (1 - discount / 100);
+}
+
+function invoiceTypeForDocument(documentType) {
+  if (documentType === "PROFORMA") return "PROFORMA";
+  if (documentType === "DELIVERY_NOTE") return "NO_INVOICE";
+  if (documentType === "RECEIPT") return "B2C_RECEIPT";
+  return "B2B_INVOICE";
+}
+
+function fiscalStatusForSalePayload(sale) {
+  if (sale.documentStatus === "cancelled") return "cancelled";
+  if (String(sale.invoiceNumber || "").startsWith("DRAFT-") || sale.paymentStatus !== "PAID") return "draft";
+  return "issued";
+}
+
+function taxProfileForSalePayload(sale) {
+  if (sale.invoiceTaxProfile) return sale.invoiceTaxProfile;
+  if (sale.documentType === "DELIVERY_NOTE") return "no_tax";
+  if (sale.documentType === "RECEIPT") return "b2c";
+  if (toNumber(sale.taxRate, 0) <= 0) return "no_tax";
+  return "standard";
+}
+
+async function findCustomerId(client, sale) {
+  const customerUuid = uuidOrNull(sale.customerId);
+  if (customerUuid) {
+    const found = await client.query("SELECT id FROM cms.customers WHERE id = $1", [customerUuid]);
+    if (found.rows[0]) return found.rows[0].id;
+  }
+  if (sale.customerId) {
+    const found = await client.query(
+      "SELECT id FROM cms.customers WHERE legacy_id = $1 OR customer_code = $1 LIMIT 1",
+      [String(sale.customerId)],
+    );
+    if (found.rows[0]) return found.rows[0].id;
+  }
+  return null;
+}
+
+async function findSkuForLine(client, line) {
+  const skuUuid = uuidOrNull(line.productId);
+  const skuText = String(line.barcode || "").trim();
+  const result = await client.query(
+    `
+      SELECT s.id, s.product_id, s.sku_code
+      FROM cms.skus s
+      WHERE ($1::uuid IS NOT NULL AND s.id = $1::uuid)
+         OR s.legacy_id = $2
+         OR s.sku_code = $3
+         OR s.barcode = $3
+      LIMIT 1
+    `,
+    [skuUuid, String(line.productId || ""), skuText],
+  );
+  return result.rows[0] || null;
+}
+
+function saleLineQtyMap(sale = {}) {
+  const map = new Map();
+  for (const line of sale.lines ?? []) {
+    const key = String(line.productId || line.barcode || "");
+    if (!key) continue;
+    const current = map.get(key) || { line, qty: 0 };
+    current.qty += Math.max(0, Math.round(toNumber(line.quantity, 0)));
+    map.set(key, current);
+  }
+  return map;
+}
+
+function collectSaleInventoryDeltas(sale, previousSale, operation) {
+  const deltas = [];
+  if (operation === "create" && sale.stockMovementCreated && sale.documentStatus !== "cancelled") {
+    for (const { line, qty } of saleLineQtyMap(sale).values()) {
+      if (qty > 0) deltas.push({ line, quantityChange: -qty, movementType: "sale", legacyId: `sale:${sale.id}:create:${line.productId}` });
+    }
+  }
+
+  if (operation === "cancel" && previousSale?.stockMovementCreated) {
+    for (const { line, qty } of saleLineQtyMap(previousSale).values()) {
+      if (qty > 0) deltas.push({ line, quantityChange: qty, movementType: "cancel_restore", legacyId: `sale:${sale.id}:cancel:${line.productId}` });
+    }
+  }
+
+  if (operation === "update_lines" && previousSale?.stockMovementCreated && sale.stockMovementCreated) {
+    const before = saleLineQtyMap(previousSale);
+    const after = saleLineQtyMap(sale);
+    const keys = new Set([...before.keys(), ...after.keys()]);
+    for (const key of keys) {
+      const oldItem = before.get(key);
+      const newItem = after.get(key);
+      const qtyDelta = (newItem?.qty ?? 0) - (oldItem?.qty ?? 0);
+      if (qtyDelta !== 0) {
+        const line = newItem?.line ?? oldItem?.line;
+        deltas.push({
+          line,
+          quantityChange: -qtyDelta,
+          movementType: qtyDelta > 0 ? "sale" : "cancel_restore",
+          legacyId: `sale:${sale.id}:update:${sale.updatedAt || Date.now()}:${key}`,
+        });
+      }
+    }
+  }
+
+  if (operation === "return") {
+    const previousReturnIds = new Set((previousSale?.returns ?? []).map((entry) => String(entry.id)));
+    for (const entry of sale.returns ?? []) {
+      if (previousReturnIds.has(String(entry.id)) || entry.stockAction !== "back_to_stock") continue;
+      const line = (sale.lines ?? []).find((item) => item.productId === entry.productId) || {
+        productId: entry.productId,
+        barcode: "",
+        name: "Returned item",
+      };
+      deltas.push({
+        line,
+        quantityChange: Math.max(1, Math.round(toNumber(entry.quantity, 1))),
+        movementType: "return",
+        reason: entry.reason,
+        legacyId: `sale:${sale.id}:return:${entry.id}`,
+      });
+    }
+  }
+
+  return deltas.filter((delta) => delta.quantityChange !== 0);
+}
+
+async function applySaleInventoryDelta(client, delta, sale, orderId, actor) {
+  const sku = await findSkuForLine(client, delta.line);
+  if (!sku) {
+    const error = new Error(`SKU not found for sale inventory change: ${delta.line?.barcode || delta.line?.productId || "unknown"}`);
+    error.statusCode = 404;
+    throw error;
+  }
+  const { warehouseId, warehouseCode, locationId, locationCode } = await ensureWarehouseAndLocation(client, "MAIN", "A-01-01");
+  await client.query(
+    `
+      INSERT INTO cms.sku_inventory_balances (sku_id, warehouse_id, location_id, qty, min_qty)
+      SELECT id, $2, $3, stock_qty, low_stock_threshold
+      FROM cms.skus
+      WHERE id = $1
+      ON CONFLICT (sku_id, warehouse_id, location_id) DO NOTHING
+    `,
+    [sku.id, warehouseId, locationId],
+  );
+  const balanceResult = await client.query(
+    `
+      SELECT id, qty
+      FROM cms.sku_inventory_balances
+      WHERE sku_id = $1 AND warehouse_id = $2 AND location_id = $3
+      FOR UPDATE
+    `,
+    [sku.id, warehouseId, locationId],
+  );
+  const balance = balanceResult.rows[0];
+  const previousQty = Math.max(0, Math.round(toNumber(balance?.qty, 0)));
+  const quantityChange = Math.round(toNumber(delta.quantityChange, 0));
+  const newQty = previousQty + quantityChange;
+  if (newQty < 0) {
+    const error = new Error(`Insufficient stock for ${sku.sku_code}. Current ${previousQty}, change ${quantityChange}.`);
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const movement = await client.query(
+    `
+      INSERT INTO cms.inventory_movements (
+        legacy_id, sku_id, movement_type, document_id, previous_qty,
+        quantity_change, new_qty, reason_category, warehouse_id, location_id,
+        external_reference, notes, created_by, created_at
+      ) VALUES (
+        $1, $2, $3, $4, $5,
+        $6, $7, $8, $9, $10,
+        $11, $12, $13, now()
+      )
+      ON CONFLICT (legacy_id) DO NOTHING
+      RETURNING id
+    `,
+    [
+      delta.legacyId,
+      sku.id,
+      delta.movementType,
+      orderId,
+      previousQty,
+      quantityChange,
+      newQty,
+      delta.reason || null,
+      warehouseId,
+      locationId,
+      sale.invoiceNumber || sale.id,
+      delta.notes || null,
+      actor || "desktop",
+    ],
+  );
+  if (!movement.rows[0]) return;
+
+  await client.query(
+    `
+      UPDATE cms.sku_inventory_balances
+      SET qty = $1, updated_at = now()
+      WHERE id = $2
+    `,
+    [newQty, balance.id],
+  );
+  await client.query(
+    `
+      INSERT INTO cms.audit_log (actor, action, entity_table, entity_id, before_data, after_data)
+      VALUES ($1, $2, 'sku_inventory_balances', $3, $4::jsonb, $5::jsonb)
+    `,
+    [
+      actor || "desktop",
+      `sale_inventory.${delta.movementType}`,
+      String(sku.id),
+      JSON.stringify({ qty: previousQty, warehouse: warehouseCode, location: locationCode }),
+      JSON.stringify({ qty: newQty, delta: quantityChange, warehouse: warehouseCode, location: locationCode }),
+    ],
+  );
+}
+
+async function upsertSaleNormalized(client, sale, previousSale, operation, actor) {
+  const documentType = oneOf(sale.documentType, DOCUMENT_TYPES, "INVOICE");
+  const documentStatus = oneOf(sale.documentStatus, DOCUMENT_STATUSES, "open");
+  const deliveryStatus = oneOf(sale.deliveryStatus, DELIVERY_STATUSES, documentType === "DELIVERY_NOTE" ? "not_prepared" : "open");
+  const customerId = await findCustomerId(client, sale);
+  const orderNumber = String(sale.invoiceNumber || `DRAFT-${sale.id}`).trim();
+  const subtotal = (sale.lines ?? []).reduce((sum, line) => sum + lineSubtotal(line), 0);
+  const taxBreakdown = sale.taxBreakdown || null;
+  const taxAmount = toNumber(sale.tax, subtotal * toNumber(sale.taxRate, 0));
+  const transportFee = toNumber(sale.transport?.fee, 0);
+  const total = toNumber(sale.total, subtotal + taxAmount + transportFee);
+  const amountPaid = toNumber(sale.amountPaid, 0);
+  const amountDue = toNumber(sale.amountDue, Math.max(0, total - amountPaid));
+
+  const order = await client.query(
+    `
+      INSERT INTO cms.orders (
+        legacy_id, order_number, document_type, document_status, delivery_status,
+        sales_channel, customer_id, customer_snapshot, subtotal, tax_rate,
+        tax_amount, tax_breakdown, transport_method, transport_label,
+        transport_fee, total, payment_status, amount_paid, amount_due,
+        stock_movement_created, cancelled_at, cancelled_by, cancellation_reason,
+        created_at
+      ) VALUES (
+        $1, $2, $3, $4, $5,
+        $6, $7, $8, $9, $10,
+        $11, $12, $13, $14,
+        $15, $16, $17, $18, $19,
+        $20, $21, $22, $23,
+        $24
+      )
+      ON CONFLICT (legacy_id) DO UPDATE SET
+        order_number = EXCLUDED.order_number,
+        document_type = EXCLUDED.document_type,
+        document_status = EXCLUDED.document_status,
+        delivery_status = EXCLUDED.delivery_status,
+        sales_channel = EXCLUDED.sales_channel,
+        customer_id = EXCLUDED.customer_id,
+        customer_snapshot = EXCLUDED.customer_snapshot,
+        subtotal = EXCLUDED.subtotal,
+        tax_rate = EXCLUDED.tax_rate,
+        tax_amount = EXCLUDED.tax_amount,
+        tax_breakdown = EXCLUDED.tax_breakdown,
+        transport_method = EXCLUDED.transport_method,
+        transport_label = EXCLUDED.transport_label,
+        transport_fee = EXCLUDED.transport_fee,
+        total = EXCLUDED.total,
+        payment_status = EXCLUDED.payment_status,
+        amount_paid = EXCLUDED.amount_paid,
+        amount_due = EXCLUDED.amount_due,
+        stock_movement_created = EXCLUDED.stock_movement_created,
+        cancelled_at = EXCLUDED.cancelled_at,
+        cancelled_by = EXCLUDED.cancelled_by,
+        cancellation_reason = EXCLUDED.cancellation_reason,
+        updated_at = now()
+      RETURNING id
+    `,
+    [
+      String(sale.id),
+      orderNumber,
+      documentType,
+      documentStatus,
+      deliveryStatus,
+      sale.salesChannel || "physical_store",
+      customerId,
+      JSON.stringify(sale.customerSnapshot || {}),
+      subtotal,
+      toNumber(sale.taxRate, 0),
+      taxAmount,
+      taxBreakdown ? JSON.stringify(taxBreakdown) : null,
+      sale.transport?.method || null,
+      sale.transport?.label || null,
+      transportFee,
+      total,
+      oneOf(sale.paymentStatus, PAYMENT_STATUSES, "OPEN"),
+      amountPaid,
+      amountDue,
+      Boolean(sale.stockMovementCreated),
+      sale.cancelledAt ? dateOrNow(sale.cancelledAt) : null,
+      sale.cancelledBy || null,
+      sale.cancellationReason || null,
+      dateOrNow(sale.createdAt),
+    ],
+  );
+  const orderId = order.rows[0].id;
+
+  await client.query("DELETE FROM cms.order_returns WHERE order_id = $1", [orderId]);
+  await client.query("DELETE FROM cms.order_payments WHERE order_id = $1", [orderId]);
+  await client.query("DELETE FROM cms.order_lines WHERE order_id = $1", [orderId]);
+
+  for (const line of sale.lines ?? []) {
+    const sku = await findSkuForLine(client, line);
+    await client.query(
+      `
+        INSERT INTO cms.order_lines (
+          order_id, sku_id, product_id, sku_code_snapshot, product_name_snapshot,
+          size_snapshot, colour_snapshot, unit_price, quantity, discount_percent
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+      `,
+      [
+        orderId,
+        sku?.id || null,
+        sku?.product_id || null,
+        sku?.sku_code || line.barcode || "UNKNOWN-SKU",
+        line.name || "Item",
+        line.size || null,
+        line.color || null,
+        toNumber(line.unitPrice, 0),
+        Math.max(1, Math.round(toNumber(line.quantity, 1))),
+        toNumber(line.discountPct, 0),
+      ],
+    );
+  }
+
+  for (const payment of sale.payments ?? []) {
+    await client.query(
+      `
+        INSERT INTO cms.order_payments (
+          legacy_id, order_id, amount, method, note, payment_date, reference, created_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      `,
+      [
+        payment.id || null,
+        orderId,
+        toNumber(payment.amount, 0),
+        oneOf(payment.method, PAYMENT_METHODS, "OTHER"),
+        payment.note || null,
+        dateOrNow(payment.paymentDate || payment.createdAt),
+        payment.reference || null,
+        dateOrNow(payment.createdAt),
+      ],
+    );
+  }
+
+  for (const entry of sale.returns ?? []) {
+    const sku = await findSkuForLine(client, { productId: entry.productId });
+    await client.query(
+      `
+        INSERT INTO cms.order_returns (
+          legacy_id, order_id, sku_id, quantity, reason, condition, refund_amount,
+          refund_method, stock_action, notes, created_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+      `,
+      [
+        entry.id || null,
+        orderId,
+        sku?.id || null,
+        Math.max(1, Math.round(toNumber(entry.quantity, 1))),
+        entry.reason || null,
+        entry.condition || null,
+        toNumber(entry.refundAmount, 0),
+        entry.refundMethod || null,
+        entry.stockAction || "back_to_stock",
+        entry.notes || null,
+        dateOrNow(entry.createdAt),
+      ],
+    );
+  }
+
+  const fiscalStatus = fiscalStatusForSalePayload(sale);
+  const invoice = await client.query(
+    `
+      INSERT INTO cms.invoices (
+        order_id, customer_id, invoice_number, invoice_type, fiscal_status,
+        editable, tax_profile, tax_rate, vat_rate, surcharge_rate, currency,
+        issue_date, due_date, customer_snapshot, subtotal, tax_amount,
+        surcharge_amount, transport_fee, total, amount_paid, amount_due,
+        notes, issued_at
+      ) VALUES (
+        $1, $2, $3, $4, $5,
+        $6, $7, $8, $9, $10, 'EUR',
+        $11, $12, $13, $14, $15,
+        $16, $17, $18, $19, $20,
+        $21, $22
+      )
+      ON CONFLICT (order_id) DO UPDATE SET
+        invoice_number = EXCLUDED.invoice_number,
+        invoice_type = EXCLUDED.invoice_type,
+        fiscal_status = EXCLUDED.fiscal_status,
+        editable = EXCLUDED.editable,
+        tax_profile = EXCLUDED.tax_profile,
+        tax_rate = EXCLUDED.tax_rate,
+        vat_rate = EXCLUDED.vat_rate,
+        surcharge_rate = EXCLUDED.surcharge_rate,
+        due_date = EXCLUDED.due_date,
+        customer_snapshot = EXCLUDED.customer_snapshot,
+        subtotal = EXCLUDED.subtotal,
+        tax_amount = EXCLUDED.tax_amount,
+        surcharge_amount = EXCLUDED.surcharge_amount,
+        transport_fee = EXCLUDED.transport_fee,
+        total = EXCLUDED.total,
+        amount_paid = EXCLUDED.amount_paid,
+        amount_due = EXCLUDED.amount_due,
+        notes = EXCLUDED.notes,
+        issued_at = COALESCE(cms.invoices.issued_at, EXCLUDED.issued_at),
+        updated_at = now()
+      RETURNING id
+    `,
+    [
+      orderId,
+      customerId,
+      orderNumber,
+      invoiceTypeForDocument(documentType),
+      fiscalStatus,
+      fiscalStatus === "draft",
+      taxProfileForSalePayload(sale),
+      toNumber(sale.taxRate, 0),
+      toNumber(taxBreakdown?.vat, toNumber(sale.taxRate, 0)),
+      toNumber(taxBreakdown?.surcharge, 0),
+      dateOrNow(sale.createdAt),
+      sale.dueDate ? dateOrNow(sale.dueDate) : null,
+      JSON.stringify(sale.customerSnapshot || {}),
+      subtotal,
+      taxBreakdown?.vatAmount === undefined ? Math.max(0, taxAmount - toNumber(taxBreakdown?.surchargeAmount, 0)) : toNumber(taxBreakdown.vatAmount, 0),
+      toNumber(taxBreakdown?.surchargeAmount, 0),
+      transportFee,
+      total,
+      amountPaid,
+      amountDue,
+      sale.invoiceNotes || null,
+      fiscalStatus === "issued" ? dateOrNow(sale.createdAt) : null,
+    ],
+  );
+  const invoiceId = invoice.rows[0].id;
+  await client.query("DELETE FROM cms.invoice_lines WHERE invoice_id = $1", [invoiceId]);
+  let lineNo = 1;
+  for (const line of sale.lines ?? []) {
+    const sku = await findSkuForLine(client, line);
+    await client.query(
+      `
+        INSERT INTO cms.invoice_lines (
+          invoice_id, sku_id, line_no, sku_code_snapshot, product_name_snapshot,
+          colour_snapshot, size_snapshot, quantity, unit_price, discount_percent, tax_rate
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+      `,
+      [
+        invoiceId,
+        sku?.id || null,
+        lineNo++,
+        sku?.sku_code || line.barcode || "UNKNOWN-SKU",
+        line.name || "Item",
+        line.color || null,
+        line.size || null,
+        Math.max(1, Math.round(toNumber(line.quantity, 1))),
+        toNumber(line.unitPrice, 0),
+        toNumber(line.discountPct, 0),
+        toNumber(sale.taxRate, 0),
+      ],
+    );
+  }
+
+  for (const delta of collectSaleInventoryDeltas(sale, previousSale, operation)) {
+    await applySaleInventoryDelta(client, delta, sale, orderId, actor);
+  }
+
+  await client.query(
+    `
+      INSERT INTO cms.audit_log (actor, action, entity_table, entity_id, after_data)
+      VALUES ($1, $2, 'orders', $3, $4::jsonb)
+    `,
+    [actor || "desktop", `sale.${operation || "save"}`, String(orderId), JSON.stringify({ legacyId: sale.id, invoiceNumber: orderNumber })],
+  );
+  return { orderId: String(orderId), invoiceId: String(invoiceId) };
+}
+
+async function saveSaleToDatabase(payload = {}) {
+  const sale = payload.sale;
+  if (!sale || !sale.id) {
+    const error = new Error("Sale payload is required.");
+    error.statusCode = 400;
+    throw error;
+  }
+  if (!payload.skipApi) {
+    const apiResult = await apiRequest("/sales/save", payload);
+    if (apiResult) return apiResult;
+  }
+
+  const client = createDatabaseClient();
+  await client.connect();
+  try {
+    await ensureInventoryBalancesForAllSkus(client);
+    await client.query("BEGIN");
+    const saved = await upsertSaleNormalized(
+      client,
+      sale,
+      payload.previousSale || null,
+      payload.operation || "save",
+      payload.actor || "desktop",
+    );
+    await client.query("COMMIT");
+
+    const hydrated = await hydrateFromNormalized(client);
+    for (const [key, raw] of Object.entries(hydrated)) {
+      await upsertRawRecord(client, key, raw, "normalized-hydration");
+    }
+    return { ok: true, sale, ...saved, serverTime: new Date().toISOString() };
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    await client.end().catch(() => undefined);
+  }
+}
+
+async function reconcileInventoryBalances(payload = {}) {
+  if (!payload.skipApi) {
+    const apiResult = await apiRequest("/inventory/reconcile", payload);
+    if (apiResult) return apiResult;
+  }
+
+  const client = createDatabaseClient();
+  await client.connect();
+  try {
+    await ensureInventoryBalancesForAllSkus(client);
+    const result = await client.query("SELECT count(*)::int AS count FROM cms.sku_inventory_balances");
+    return { ok: true, balances: result.rows[0]?.count ?? 0 };
+  } finally {
+    await client.end().catch(() => undefined);
+  }
+}
+
 module.exports = {
+  allocateSerial,
   adjustInventory,
   apiRequest,
   cloudPull,
   cloudPush,
+  reconcileInventoryBalances,
+  saveSaleToDatabase,
 };
