@@ -1,6 +1,6 @@
 {
   "name": "pavilion-cms-api",
-  "version": "1.2.2-8",
+  "version": "1.2.2-9",
   "private": true,
   "type": "commonjs",
   "main": "handler.cjs",

@@ -103,10 +103,10 @@ function dispatchRefresh(key: string) {
   window.dispatchEvent(new StorageEvent("storage", { key }));
 }
 
-function collectRecords(): CloudRecord[] {
-  return CLOUD_SYNC_KEYS.flatMap((key) => {
+function collectRecords(keys: readonly string[] = CLOUD_SYNC_KEYS, includeNull = false): CloudRecord[] {
+  return keys.flatMap((key) => {
     const raw = localStorage.getItem(key);
-    return raw === null ? [] : [{ key, raw }];
+    return raw === null && !includeNull ? [] : [{ key, raw }];
   });
 }
 
@@ -159,6 +159,7 @@ export function CloudSyncProvider({ children }: { children: ReactNode }) {
   const originalRemoveItemRef = useRef(Storage.prototype.removeItem);
   const applyingRemoteRef = useRef(false);
   const dirtyRef = useRef(false);
+  const dirtyKeysRef = useRef<Set<string>>(new Set());
   const pushTimerRef = useRef<number | undefined>(undefined);
   const syncingRef = useRef(false);
   const [status, setStatus] = useState<CloudSyncStatus>(() => ({
@@ -206,19 +207,26 @@ export function CloudSyncProvider({ children }: { children: ReactNode }) {
       enabled: true,
       phase: "online",
       lastSyncAt: Date.now(),
-      pendingCount: dirtyRef.current ? collectRecords().length : 0,
+      pendingCount: dirtyKeysRef.current.size,
     });
   }, [applyRemoteRecords, desktopApp, enabled]);
 
   const pushNow = useCallback(async () => {
     if (!enabled || !desktopApp?.cloudPush || syncingRef.current) return;
-    const records = collectRecords();
-    if (records.length === 0) return;
+    const dirtyKeys = Array.from(dirtyKeysRef.current);
+    const records = dirtyKeys.length > 0 ? collectRecords(dirtyKeys, true) : [];
+    if (records.length === 0) {
+      dirtyRef.current = false;
+      dirtyKeysRef.current.clear();
+      setStatus((current) => ({ ...current, pendingCount: 0 }));
+      return;
+    }
     syncingRef.current = true;
     setStatus((current) => ({ ...current, ready: true, phase: "syncing" }));
     try {
       await desktopApp.cloudPush({ clientId: getClientId(originalSetItemRef.current), records });
       dirtyRef.current = false;
+      dirtyKeysRef.current.clear();
       setStatus({
         ready: true,
         enabled: true,
@@ -240,13 +248,14 @@ export function CloudSyncProvider({ children }: { children: ReactNode }) {
     }
   }, [desktopApp, enabled]);
 
-  const schedulePush = useCallback(() => {
+  const schedulePush = useCallback((key: string) => {
     if (!enabled) return;
     dirtyRef.current = true;
+    dirtyKeysRef.current.add(key);
     setStatus((current) => ({
       ...current,
       ready: true,
-      pendingCount: collectRecords().length,
+      pendingCount: dirtyKeysRef.current.size,
     }));
     window.clearTimeout(pushTimerRef.current);
     pushTimerRef.current = window.setTimeout(() => {
@@ -271,16 +280,18 @@ export function CloudSyncProvider({ children }: { children: ReactNode }) {
     originalRemoveItemRef.current = originalRemoveItem;
 
     Storage.prototype.setItem = function patchedSetItem(key: string, value: string) {
+      const previous = this === localStorage ? localStorage.getItem(key) : null;
       originalSetItem.call(this, key, value);
-      if (!applyingRemoteRef.current && this === localStorage && isSyncKey(key)) {
-        schedulePush();
+      if (!applyingRemoteRef.current && this === localStorage && isSyncKey(key) && previous !== value) {
+        schedulePush(key);
       }
     };
 
     Storage.prototype.removeItem = function patchedRemoveItem(key: string) {
+      const previous = this === localStorage ? localStorage.getItem(key) : null;
       originalRemoveItem.call(this, key);
-      if (!applyingRemoteRef.current && this === localStorage && isSyncKey(key)) {
-        schedulePush();
+      if (!applyingRemoteRef.current && this === localStorage && isSyncKey(key) && previous !== null) {
+        schedulePush(key);
       }
     };
 
@@ -296,7 +307,7 @@ export function CloudSyncProvider({ children }: { children: ReactNode }) {
           enabled: true,
           phase: "offline",
           message,
-          pendingCount: collectRecords().length,
+          pendingCount: dirtyKeysRef.current.size,
         });
       })
       .finally(() => window.clearTimeout(initialTimer));
@@ -309,7 +320,7 @@ export function CloudSyncProvider({ children }: { children: ReactNode }) {
           ready: true,
           phase: "offline",
           message,
-          pendingCount: collectRecords().length,
+          pendingCount: dirtyKeysRef.current.size,
         }));
       });
     }, PULL_INTERVAL_MS);

@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld("desktopApp", {
   createImageUploadUrl: (payload) => ipcRenderer.invoke("image:create-upload-url", payload),
   registerImageAsset: (payload) => ipcRenderer.invoke("image:register-asset", payload),
   saveInvoiceDocument: (payload) => ipcRenderer.invoke("invoice:save-document", payload),
+  saveOrderDocument: (payload) => ipcRenderer.invoke("order:save-document", payload),
   adjustInventory: (payload) => ipcRenderer.invoke("inventory:adjust", payload),
   reconcileInventory: (payload) => ipcRenderer.invoke("inventory:reconcile", payload),
   allocateSerial: (payload) => ipcRenderer.invoke("serial:next", payload),

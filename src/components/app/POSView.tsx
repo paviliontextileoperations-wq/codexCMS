@@ -489,7 +489,7 @@ export function POSView() {
     if (paymentStatus === "PAID") {
       generateInvoicePdf(sale);
       if (sale.transport?.method === "DELIVERY") {
-        generateShippingLabelPdf(sale);
+        generateShippingLabelPdf(sale, { action: "cloud" });
       }
       toast.success(`${sale.invoiceNumber} · ${paymentStatus}`);
     } else {
@@ -1156,9 +1156,9 @@ export function POSView() {
             {createdSale?.transport?.method === "DELIVERY" && (
               <Button
                 variant="outline"
-                onClick={() => createdSale && generateShippingLabelPdf(createdSale, { action: "print" })}
+                onClick={() => createdSale && generateShippingLabelPdf(createdSale, { action: "preview" })}
               >
-                <Truck /> Print label
+                <Truck /> Label
               </Button>
             )}
             <Button onClick={() => setCreatedSale(null)}>Close</Button>

@@ -567,6 +567,115 @@ async function saveInvoiceDocument(payload) {
   }
 }
 
+async function saveOrderDocument(payload) {
+  if (!S3_BUCKET) {
+    const error = new Error("S3_BUCKET is not configured.");
+    error.statusCode = 500;
+    throw error;
+  }
+
+  const sale = payload.sale || {};
+  const documentType = String(payload.documentType || "SHIPPING_LABEL").toUpperCase();
+  if (documentType !== "SHIPPING_LABEL") {
+    const error = new Error("Unsupported order document type.");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const orderNumber = cleanFilePart(sale.invoiceNumber, "order");
+  const documentNumber = cleanFilePart(payload.documentNumber, `${orderNumber}-LABEL`);
+  const fileName = cleanFilePart(payload.fileName, `${documentNumber}.pdf`);
+  const pdfBase64 = String(payload.pdfBase64 || "");
+  if (!pdfBase64) {
+    const error = new Error("Missing PDF content.");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const pdfBuffer = Buffer.from(pdfBase64, "base64");
+  const issueDate = sale.createdAt ? new Date(sale.createdAt) : new Date();
+  const year = String(issueDate.getFullYear());
+  const month = String(issueDate.getMonth() + 1).padStart(2, "0");
+  const cloudKey = [S3_DOCUMENTS_PREFIX, "shipping-labels", year, month, fileName].filter(Boolean).join("/");
+  const url = imageUrlForKey(cloudKey);
+  const sha256 = crypto.createHash("sha256").update(pdfBuffer).digest("hex");
+
+  const client = createDatabaseClient();
+  await client.connect();
+  try {
+    await client.query("BEGIN");
+    const order = await client.query(
+      `
+        SELECT id
+        FROM cms.orders
+        WHERE legacy_id = $1 OR order_number = $2
+        ORDER BY created_at DESC
+        LIMIT 1
+      `,
+      [sale.id || null, sale.invoiceNumber || orderNumber],
+    );
+    if (order.rowCount === 0) {
+      const error = new Error("Order not found for shipping label document.");
+      error.statusCode = 404;
+      throw error;
+    }
+
+    const s3 = new S3Client({ region: REGION });
+    await s3.send(
+      new PutObjectCommand({
+        Bucket: S3_BUCKET,
+        Key: cloudKey,
+        Body: pdfBuffer,
+        ContentType: "application/pdf",
+        Metadata: {
+          orderNumber,
+          documentType,
+        },
+      }),
+    );
+
+    const document = await client.query(
+      `
+        INSERT INTO cms.order_documents (
+          order_id, document_type, document_number, file_url, file_sha256, issued_at, status
+        ) VALUES ($1, 'SHIPPING_LABEL', $2, $3, $4, $5, 'issued')
+        ON CONFLICT (document_number) DO UPDATE SET
+          file_url = EXCLUDED.file_url,
+          file_sha256 = EXCLUDED.file_sha256,
+          issued_at = EXCLUDED.issued_at,
+          status = 'issued',
+          updated_at = now()
+        RETURNING *
+      `,
+      [order.rows[0].id, documentNumber, url, sha256, issueDate],
+    );
+    await client.query(
+      `
+        INSERT INTO cms.audit_log (actor, action, entity_table, entity_id, after_data)
+        VALUES ('api', 'order.shipping_label_saved', 'order_documents', $1, $2::jsonb)
+      `,
+      [
+        String(document.rows[0].id),
+        JSON.stringify({
+          orderNumber,
+          documentNumber,
+          fileName,
+          cloudKey,
+          url,
+          sha256,
+        }),
+      ],
+    );
+    await client.query("COMMIT");
+    return { ok: true, url, document: document.rows[0] };
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    await client.end().catch(() => undefined);
+  }
+}
+
 async function handle(event) {
   const path = requestPath(event);
   const method = requestMethod(event).toUpperCase();
@@ -605,6 +714,10 @@ async function handle(event) {
 
   if (method === "POST" && path === "/invoices/document") {
     return response(200, await saveInvoiceDocument(parseBody(event)));
+  }
+
+  if (method === "POST" && path === "/orders/document") {
+    return response(200, await saveOrderDocument(parseBody(event)));
   }
 
   if (method === "POST" && path === "/inventory/adjust") {

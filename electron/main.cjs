@@ -31,6 +31,11 @@ ipcMain.handle("invoice:save-document", async (_event, payload) => {
   if (!result) throw new Error("API_BASE_URL is not configured.");
   return result;
 });
+ipcMain.handle("order:save-document", async (_event, payload) => {
+  const result = await apiRequest("/orders/document", payload);
+  if (!result) throw new Error("API_BASE_URL is not configured.");
+  return result;
+});
 ipcMain.handle("inventory:adjust", async (_event, payload) => {
   const result = await apiRequest("/inventory/adjust", payload);
   if (result) return result;

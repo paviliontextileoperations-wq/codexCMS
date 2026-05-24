@@ -74,6 +74,17 @@ interface Window {
       document?: Record<string, unknown>;
       url?: string;
     }>;
+    saveOrderDocument: (payload: {
+      sale: unknown;
+      documentType: "SHIPPING_LABEL";
+      documentNumber?: string;
+      fileName: string;
+      pdfBase64: string;
+    }) => Promise<{
+      ok: boolean;
+      document?: Record<string, unknown>;
+      url?: string;
+    }>;
     adjustInventory: (payload: {
       id?: string;
       productId: string;

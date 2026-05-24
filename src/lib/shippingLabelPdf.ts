@@ -1,7 +1,10 @@
 import { jsPDF } from "jspdf";
 import type { Sale } from "@/types";
 import { getRibbonTitle } from "./brandSettings";
+import { saveOrderPdfToCloud } from "./cloudDocuments";
 import { outputPdfDocument, type PdfAction } from "./pdfOutput";
+
+type ShippingLabelAction = PdfAction | "cloud";
 
 function formatAddress(sale: Sale): string[] {
   const address = sale.customerSnapshot.logisticsAddress ?? sale.customerSnapshot.fiscalAddress;
@@ -14,7 +17,7 @@ function formatAddress(sale: Sale): string[] {
   ].filter((line): line is string => Boolean(line && line.trim()));
 }
 
-export function generateShippingLabelPdf(sale: Sale, options: { action?: PdfAction } = {}) {
+export function generateShippingLabelPdf(sale: Sale, options: { action?: ShippingLabelAction } = {}) {
   const doc = new jsPDF({ unit: "pt", format: [420, 595] });
   const W = doc.internal.pageSize.getWidth();
   const M = 28;
@@ -76,6 +79,23 @@ export function generateShippingLabelPdf(sale: Sale, options: { action?: PdfActi
   doc.setFontSize(24);
   doc.text(`*${sale.invoiceNumber}*`, W / 2, M + 505, { align: "center" });
 
-  outputPdfDocument(doc, `${sale.invoiceNumber}-shipping-label.pdf`, action, `${sale.invoiceNumber} shipping label`);
+  const documentNumber = `${sale.invoiceNumber}-LABEL`;
+  const fileName = `${documentNumber}.pdf`;
+  const pdfBase64 = String(doc.output("datauristring")).split(",")[1] ?? "";
+
+  if (pdfBase64) {
+    void saveOrderPdfToCloud(sale, {
+      documentType: "SHIPPING_LABEL",
+      documentNumber,
+      fileName,
+      pdfBase64,
+    }).catch((error) => {
+      console.warn("Unable to save shipping label to cloud", error);
+    });
+  }
+
+  if (action !== "cloud") {
+    outputPdfDocument(doc, fileName, action, `${sale.invoiceNumber} shipping label`);
+  }
   return true;
 }

@@ -673,9 +673,9 @@ export function SalesView() {
                         <Button
                           size="icon"
                           variant="ghost"
-                          onClick={() => generateShippingLabelPdf(s, { action: "print" })}
+                          onClick={() => generateShippingLabelPdf(s, { action: "preview" })}
                           disabled={isPending || docStatus === "cancelled"}
-                          title="Print shipping label"
+                          title="Preview shipping label"
                         >
                           <Truck />
                         </Button>
@@ -1171,7 +1171,7 @@ export function SalesView() {
             {viewSale?.transport?.method === "DELIVERY" && (
               <Button
                 variant="outline"
-                onClick={() => generateShippingLabelPdf(viewSale, { action: "print" })}
+                onClick={() => generateShippingLabelPdf(viewSale, { action: "preview" })}
                 disabled={docStatusOf(viewSale) === "cancelled"}
               ><Truck /> Label</Button>
             )}
