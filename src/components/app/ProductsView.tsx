@@ -22,6 +22,7 @@ import { ProductMaintenanceView } from "./ProductMaintenanceView";
 import { useMaintenance } from "@/lib/maintenanceStore";
 
 type ProductStatus = "complete" | "missing_picture" | "incomplete" | "temporary" | "pending_approval";
+const SKU_SIZE_CODES = ["XXL", "XXS", "XL", "XS", "L", "M", "S", "U"] as const;
 
 function getProductStatus(p: Product): ProductStatus {
   if (p.maintenanceStatus === "pending_approval") return "pending_approval";
@@ -108,7 +109,7 @@ export function ProductsView() {
   function downloadTemplate() {
     const defaultMarkup = getDefaultB2cMarkupPercent();
     const headers = [
-      "VARIANT_SKU", "OTHER_SKU", "MODEL_NUMBER", "NAME", "DESCRIPTION", "CATEGORY", "FINE_CATEGORY",
+      "NEW_SKU", "OLD_SKU", "MODEL_NUMBER", "NAME", "DESCRIPTION", "CATEGORY", "FINE_CATEGORY",
       "B2B_PRICE", "B2C_MARKUP_PERCENT", "B2C_PRICE_AUTO", "COMPOSITION", "TAGS",
       "MAIN_PICTURE", "SHEIN_ENABLED", "SHEIN_NAME", "SHEIN_PRICE", "SHEIN_DESCRIPTION",
       "MANUFACTURER_ORDER_ID", "COLOUR_NAME", "COLOUR_CODE", "SIZE", "QUANTITY",
@@ -117,7 +118,7 @@ export function ProductsView() {
       "LENGTH_E", "LENGTH_F", "LENGTH_G", "LENGTH_H",
     ];
     const sample = [{
-      VARIANT_SKU: "P001-B-S", OTHER_SKU: "ALT-12345", MODEL_NUMBER: "P001", NAME: "Long Coat Premium",
+      NEW_SKU: "P001BS", OLD_SKU: "ALT-12345", MODEL_NUMBER: "P001", NAME: "Long Coat Premium",
       DESCRIPTION: "Premium long coat", CATEGORY: "COAT", FINE_CATEGORY: "LONG_COAT",
       B2B_PRICE: 45.9, B2C_MARKUP_PERCENT: defaultMarkup, B2C_PRICE_AUTO: "=H2*(1+I2/100)",
       COMPOSITION: "80% POLYESTER, 20% WOOL", TAGS: "WINTER,PREMIUM",
@@ -158,6 +159,20 @@ export function ProductsView() {
       const existing = productsStore.all();
       const colours = getColours();
       const colourByCode = new Map(colours.map((c) => [c.code.toUpperCase(), c.name]));
+      const colourCodesByLength = [...colourByCode.keys()].sort((a, b) => b.length - a.length);
+      const parseCompactSku = (sku: string) => {
+        const normalized = normalizeProductCode(sku);
+        for (const size of SKU_SIZE_CODES) {
+          if (!normalized.endsWith(size)) continue;
+          const withoutSize = normalized.slice(0, -size.length);
+          for (const code of colourCodesByLength) {
+            if (!withoutSize.endsWith(code)) continue;
+            const model = withoutSize.slice(0, -code.length);
+            if (model) return { model, colourCode: code, sizeCode: size };
+          }
+        }
+        return null;
+      };
 
       // Pre-pass: parse colour/size from SKU when missing, and combine
       // duplicate rows that share the same SKU (or same model+colour+size).
@@ -184,12 +199,8 @@ export function ProductsView() {
       for (let i = 0; i < rows.length; i++) {
         const row = rows[i] as Parsed;
         row.__rowNum = i + 2;
-        const barcodePre = String(readRaw(row, "MODEL_NUMBER", "barcode") ?? "").trim();
-        if (!barcodePre) {
-          skipReasons.push(`Row ${row.__rowNum}: missing MODEL_NUMBER`);
-          continue;
-        }
-        const skuPre = String(readRaw(row, "VARIANT_SKU", "sku") ?? "").trim();
+        const barcodePreInitial = String(readRaw(row, "MODEL_NUMBER", "barcode") ?? "").trim();
+        const skuPre = String(readRaw(row, "NEW_SKU", "VARIANT_SKU", "sku") ?? "").trim();
         if (skuPre) {
           const parts = skuPre.split("-").map((s) => s.trim()).filter(Boolean);
           if (parts.length >= 3) {
@@ -204,6 +215,20 @@ export function ProductsView() {
               if (!readRaw(row, "COLOUR_CODE")) setVal(row, "COLOUR_CODE", codeFromSku.toUpperCase());
             }
           }
+          const compact = parseCompactSku(skuPre);
+          if (compact) {
+            if (!readRaw(row, "MODEL_NUMBER", "barcode")) setVal(row, "MODEL_NUMBER", compact.model);
+            if (!readRaw(row, "SIZE", "size")) setVal(row, "SIZE", compact.sizeCode);
+            if (!readRaw(row, "COLOUR_NAME", "color")) {
+              setVal(row, "COLOUR_NAME", colourByCode.get(compact.colourCode) ?? compact.colourCode);
+            }
+            if (!readRaw(row, "COLOUR_CODE")) setVal(row, "COLOUR_CODE", compact.colourCode);
+          }
+        }
+        const barcodePre = String(readRaw(row, "MODEL_NUMBER", "barcode") ?? barcodePreInitial).trim();
+        if (!barcodePre) {
+          skipReasons.push(`Row ${row.__rowNum}: missing MODEL_NUMBER`);
+          continue;
         }
         const cKey = String(readRaw(row, "COLOUR_NAME", "color") ?? "").trim().toUpperCase();
         const sKey = String(readRaw(row, "SIZE", "size") ?? "").trim().toUpperCase();
@@ -247,7 +272,7 @@ export function ProductsView() {
         };
         const name = String(pick("NAME", "name") ?? "").trim();
         const barcode = normalizeProductCode(String(pick("MODEL_NUMBER", "barcode") ?? ""));
-        const sku = normalizeProductCode(String(pick("VARIANT_SKU", "sku") ?? ""));
+        const sku = normalizeProductCode(String(pick("NEW_SKU", "VARIANT_SKU", "sku") ?? ""));
         const num = (v: unknown) => {
           const n = Number(String(v ?? "").replace(",", "."));
           return Number.isFinite(n) ? n : 0;
@@ -275,7 +300,7 @@ export function ProductsView() {
           barcode,
           name,
           sku,
-          otherSku: String(pick("OTHER_SKU", "otherSku") ?? "").trim() || undefined,
+          otherSku: String(pick("OLD_SKU", "OTHER_SKU", "otherSku") ?? "").trim() || undefined,
           category: String(pick("CATEGORY", "category") ?? "").trim(),
           fineCategory: String(pick("FINE_CATEGORY") ?? "").trim() || undefined,
           size: String(pick("SIZE", "size") ?? "").trim(),
@@ -434,7 +459,7 @@ export function ProductsView() {
         <input
           value={q}
           onChange={(e) => setQ(e.target.value)}
-          placeholder="Search by name, barcode, SKU…"
+          placeholder="Search by name, model, NewSKU, OldSKU..."
           className="h-11 w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground"
         />
       </div>
@@ -446,8 +471,8 @@ export function ProductsView() {
           <table className="w-full text-sm">
             <thead className="bg-foreground text-primary-foreground">
               <tr className="text-left">
-                <th className="px-4 py-3 font-semibold uppercase tracking-wider text-[11px]">SKU</th>
-                <th className="px-4 py-3 font-semibold uppercase tracking-wider text-[11px]">Other SKU</th>
+                <th className="px-4 py-3 font-semibold uppercase tracking-wider text-[11px]">NewSKU</th>
+                <th className="px-4 py-3 font-semibold uppercase tracking-wider text-[11px]">OldSKU</th>
                 <th className="px-4 py-3 font-semibold uppercase tracking-wider text-[11px]">Status</th>
                 <th className="px-4 py-3 font-semibold uppercase tracking-wider text-[11px]">Model</th>
                 <th className="px-4 py-3 font-semibold uppercase tracking-wider text-[11px]">Name</th>

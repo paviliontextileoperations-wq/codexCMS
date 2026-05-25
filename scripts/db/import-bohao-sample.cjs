@@ -8,6 +8,49 @@ const PRODUCTS_FILE = path.join(DATA_DIR, "Bohao_PRODUCTS.xls");
 const CUSTOMERS_FILE = path.join(DATA_DIR, "Bohao_CLIENTS.xls");
 const DEFAULT_LIMIT = 200;
 const IMPORT_TAG = "bohao-sample-200";
+const SIZE_CODES = ["XXL", "XXS", "XL", "XS", "L", "M", "S", "U"];
+const COLOUR_CODES = [
+  ["BGO", "DARK BEIGE"],
+  ["CRA", "CORAL"],
+  ["B", "WHITE"],
+  ["R", "RED"],
+  ["N", "BLACK"],
+  ["F", "PINK"],
+  ["FC", "LIGHT PINK"],
+  ["FO", "DARK PINK"],
+  ["V", "GREEN"],
+  ["J", "ORANGE"],
+  ["G", "GRAY"],
+  ["A", "YELLOW"],
+  ["W", "BROWN"],
+  ["P", "PURPLE"],
+  ["C", "UNIQUE"],
+  ["Z", "BLUE"],
+  ["BG", "BEIGE"],
+  ["GT", "MAROON"],
+  ["ZM", "NAVY"],
+  ["CM", "CAMEL"],
+  ["VO", "OLIVE"],
+  ["VC", "LIGHT GREEN"],
+  ["GC", "LIGHT GRAY"],
+  ["GO", "DARK GRAY"],
+  ["Q", "TURQUOISE"],
+  ["VK", "KAKHI"],
+  ["VP", "PETROL GREEN"],
+  ["JC", "LIGHT ORANGE"],
+  ["ZC", "LIGHT BLUE"],
+  ["VA", "WATER GREEN"],
+  ["GM", "MEDIUM GREY"],
+  ["DN", "DENIM"],
+  ["M", "MUSTARD"],
+  ["MO", "DARK MUSTARD"],
+  ["L", "LILAC"],
+  ["PT", "PISTACHIO"],
+  ["CR", "YVORY"],
+  ["WO", "DARK BROWN"],
+  ["D", "GOLDEN"],
+  ["PL", "SILVER"],
+].sort((a, b) => b[0].length - a[0].length);
 
 function argValue(name, fallback) {
   const prefix = `--${name}=`;
@@ -95,13 +138,37 @@ function parseStatus(blocked) {
   return toNumber(blocked, 0) === 0 ? "active" : "archived";
 }
 
+function parseNewSkuParts(sourceSku) {
+  for (const sizeCode of SIZE_CODES) {
+    if (!sourceSku.endsWith(sizeCode)) continue;
+    const withoutSize = sourceSku.slice(0, -sizeCode.length);
+    for (const [colourCode, colourName] of COLOUR_CODES) {
+      if (!withoutSize.endsWith(colourCode)) continue;
+      const modelCode = withoutSize.slice(0, -colourCode.length);
+      if (modelCode) {
+        return { modelCode, colourCode, colourName, sizeCode };
+      }
+    }
+  }
+  return null;
+}
+
 function skuPairForProduct(row, index) {
-  const sourceSku = cleanCode(row.ArticuloID, `BOHAO-${String(index + 1).padStart(4, "0")}`);
-  const alternate = cleanCode(row.CodigoBarra || row.MultiCodigo || row.SerialNo || row.ArticuloID, sourceSku);
+  const oldSku = cleanCode(row.ArticuloID, `BOHAO-${String(index + 1).padStart(4, "0")}`);
+  const parsed = parseNewSkuParts(oldSku);
+  const modelCode = parsed?.modelCode ?? oldSku;
+  const colourCode = parsed?.colourCode ?? "C";
+  const colourName = parsed?.colourName ?? "UNIQUE";
+  const sizeCode = parsed?.sizeCode ?? "U";
+  const newSku = `${modelCode}${colourCode}${sizeCode}`;
   return {
-    nsku: sourceSku,
-    osku: alternate,
-    sourceSku,
+    nsku: newSku,
+    osku: oldSku,
+    sourceSku: oldSku,
+    modelCode,
+    colourCode,
+    colourName,
+    sizeCode,
   };
 }
 
@@ -132,19 +199,22 @@ async function ensureProductCategory(client, categoryName, fineCategoryName) {
 }
 
 async function ensureColour(client) {
-  await client.query(
-    `
-      INSERT INTO cms.colour_palette (colour_code, colour_name)
-      VALUES ('UNSPECIFIED', 'Unspecified')
-      ON CONFLICT (colour_code) DO UPDATE SET
-        colour_name = EXCLUDED.colour_name,
-        updated_at = now()
-    `,
-  );
+  for (const [code, name] of COLOUR_CODES) {
+    await client.query(
+      `
+        INSERT INTO cms.colour_palette (colour_code, colour_name)
+        VALUES ($1, $2)
+        ON CONFLICT (colour_code) DO UPDATE SET
+          colour_name = EXCLUDED.colour_name,
+          updated_at = now()
+      `,
+      [code, name],
+    );
+  }
 }
 
 async function upsertProductRow(client, row, index, warehouse) {
-  const { nsku, osku, sourceSku } = skuPairForProduct(row, index);
+  const { nsku, osku, sourceSku, modelCode, colourCode, colourName, sizeCode } = skuPairForProduct(row, index);
   const productName = text(row.NombreES) || nsku;
   const [category, fineCategory] = categoryFromName(productName);
   const { categoryId, fineCategoryId } = await ensureProductCategory(client, category, fineCategory);
@@ -155,9 +225,12 @@ async function upsertProductRow(client, row, index, warehouse) {
   const status = parseStatus(row.Bloqueado);
   const notes = [
     `Import tag: ${IMPORT_TAG}`,
-    `Nsku: ${nsku}`,
-    `Osku: ${osku}`,
+    `NewSKU: ${nsku}`,
+    `OldSKU: ${osku}`,
     `Bohao ArticuloID: ${sourceSku}`,
+    `Model: ${modelCode}`,
+    `Colour: ${colourCode}`,
+    `Size: ${sizeCode}`,
     row.DibujoID ? `DibujoID: ${row.DibujoID}` : null,
     costPrice ? `Cost price: ${costPrice}` : null,
   ]
@@ -188,8 +261,8 @@ async function upsertProductRow(client, row, index, warehouse) {
       RETURNING id
     `,
     [
-      `bohao-product:${sourceSku}`,
-      nsku,
+      `bohao-product:${modelCode}`,
+      modelCode,
       productName,
       notes,
       categoryId,
@@ -206,24 +279,24 @@ async function upsertProductRow(client, row, index, warehouse) {
   const colour = await client.query(
     `
       INSERT INTO cms.product_colours (product_id, colour_name, colour_code, sort_order)
-      VALUES ($1, 'Unspecified', 'UNSPECIFIED', 100)
+      VALUES ($1, $2, $3, 100)
       ON CONFLICT (product_id, colour_code) DO UPDATE SET
         colour_name = EXCLUDED.colour_name,
         updated_at = now()
       RETURNING id
     `,
-    [productId],
+    [productId, colourName, colourCode],
   );
   const size = await client.query(
     `
       INSERT INTO cms.product_sizes (product_id, size_code, size_label, sort_order)
-      VALUES ($1, 'U', 'One Size / Unspecified', 100)
+      VALUES ($1, $2, $3, 100)
       ON CONFLICT (product_id, size_code) DO UPDATE SET
         size_label = EXCLUDED.size_label,
         updated_at = now()
       RETURNING id
     `,
-    [productId],
+    [productId, sizeCode, sizeCode === "U" ? "One Size" : sizeCode],
   );
 
   const sku = await client.query(
@@ -291,6 +364,10 @@ async function upsertProductRow(client, row, index, warehouse) {
     name: productName,
     category,
     fine_category: fineCategory,
+    model_code: modelCode,
+    colour_code: colourCode,
+    colour_name: colourName,
+    size_code: sizeCode,
     b2b_price: price,
     retail_price: retailPrice || "",
     stock_qty: 0,
@@ -512,6 +589,25 @@ async function main() {
     for (let i = 0; i < products.length; i += 1) {
       productReport.push(await upsertProductRow(client, products[i], i, warehouse));
     }
+    await client.query(`
+      DELETE FROM cms.product_colours pc
+      USING cms.products p
+      WHERE p.id = pc.product_id
+        AND p.source = 'bohao'
+        AND NOT EXISTS (SELECT 1 FROM cms.skus s WHERE s.colour_id = pc.id)
+    `);
+    await client.query(`
+      DELETE FROM cms.product_sizes ps
+      USING cms.products p
+      WHERE p.id = ps.product_id
+        AND p.source = 'bohao'
+        AND NOT EXISTS (SELECT 1 FROM cms.skus s WHERE s.size_id = ps.id)
+    `);
+    await client.query(`
+      DELETE FROM cms.products p
+      WHERE p.source = 'bohao'
+        AND NOT EXISTS (SELECT 1 FROM cms.skus s WHERE s.product_id = p.id)
+    `);
 
     const customerReport = [];
     for (let i = 0; i < customers.length; i += 1) {
@@ -537,7 +633,8 @@ async function main() {
           skuMapping: {
             nsku: "skus.sku_code",
             osku: "skus.other_sku",
-            note: "The first 200 Bohao product rows mostly contain only ArticuloID, so both fields preserve the source style code unless an alternate code exists.",
+            rule: "NewSKU = model_code + colour_code + size_code. OldSKU = original Bohao ArticuloID.",
+            defaultWhenMissing: "If colour or size cannot be parsed, colour defaults to C/UNIQUE and size defaults to U.",
           },
         }),
       ],
@@ -550,6 +647,10 @@ async function main() {
       { name: "nsku" },
       { name: "osku" },
       { name: "source_articulo_id" },
+      { name: "model_code" },
+      { name: "colour_code" },
+      { name: "colour_name" },
+      { name: "size_code" },
       { name: "name" },
       { name: "category" },
       { name: "fine_category" },

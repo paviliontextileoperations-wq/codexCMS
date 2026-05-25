@@ -833,14 +833,14 @@ export function ProductForm({
               {(() => {
               return (
               <div className="grid gap-2 grid-cols-5">
-                <Field label="SKU (auto)">
+                <Field label="NewSKU">
                   <Input value={buildSku(model, v.colourCode, v.sizeCode)} readOnly placeholder="auto" />
                 </Field>
-                <Field label="Other SKU">
+                <Field label="OldSKU">
                   <Input
                     value={v.otherSku}
                     onChange={(e) => updateVariation(v.id, { otherSku: e.target.value })}
-                    placeholder="optional"
+                    placeholder="old style / factory SKU"
                   />
                 </Field>
                 <Field label="Size">

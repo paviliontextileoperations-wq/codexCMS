@@ -361,7 +361,7 @@ async function upsertProductSize(client, productId, product) {
 }
 
 async function upsertSku(client, productId, colourId, sizeId, product, modelCode, colourCode, sizeCode) {
-  const skuCode = cleanCode(product.sku, `${modelCode}-${colourCode}-${sizeCode}`);
+  const skuCode = cleanCode(product.sku, `${modelCode}${colourCode}${sizeCode}`);
   const result = await client.query(
     `
       INSERT INTO cms.skus (
@@ -1215,7 +1215,7 @@ async function importSnapshot(client, input) {
         if (row.id) {
           skuMap.set(row.id, skuId);
         }
-        const skuCode = cleanCode(row.sku, `${modelCode}-${colourCode}-${size.size_code}`);
+        const skuCode = cleanCode(row.sku, `${modelCode}${colourCode}${size.size_code}`);
         const productInfo = {
           productId,
           skuId,
