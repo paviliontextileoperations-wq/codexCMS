@@ -22,6 +22,7 @@
     "db:check": "node scripts/db/check.cjs",
     "db:export": "node scripts/db/export-view.cjs",
     "db:import:localstorage": "node scripts/db/import-localstorage.cjs",
+    "db:import:bohao-sample": "node scripts/db/import-bohao-sample.cjs",
     "db:reset-business": "node scripts/db/reset-business-data.cjs --yes",
     "db:seed:demo": "node scripts/db/seed-demo.cjs",
     "lint": "eslint .",
