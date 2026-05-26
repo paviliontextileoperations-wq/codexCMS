@@ -109,7 +109,7 @@ export function ProductsView() {
   function downloadTemplate() {
     const defaultMarkup = getDefaultB2cMarkupPercent();
     const headers = [
-      "NEW_SKU", "OLD_SKU", "MODEL_NUMBER", "NAME", "DESCRIPTION", "CATEGORY", "FINE_CATEGORY",
+      "AUTO_SKU", "OTHER_SKU", "MODEL_NUMBER", "NAME", "DESCRIPTION", "CATEGORY", "FINE_CATEGORY",
       "B2B_PRICE", "B2C_MARKUP_PERCENT", "B2C_PRICE_AUTO", "COMPOSITION", "TAGS",
       "MAIN_PICTURE", "SHEIN_ENABLED", "SHEIN_NAME", "SHEIN_PRICE", "SHEIN_DESCRIPTION",
       "MANUFACTURER_ORDER_ID", "COLOUR_NAME", "COLOUR_CODE", "SIZE", "QUANTITY",
@@ -118,7 +118,7 @@ export function ProductsView() {
       "LENGTH_E", "LENGTH_F", "LENGTH_G", "LENGTH_H",
     ];
     const sample = [{
-      NEW_SKU: "P001BS", OLD_SKU: "ALT-12345", MODEL_NUMBER: "P001", NAME: "Long Coat Premium",
+      AUTO_SKU: "P001BS", OTHER_SKU: "SOURCE-12345", MODEL_NUMBER: "P001", NAME: "Long Coat Premium",
       DESCRIPTION: "Premium long coat", CATEGORY: "COAT", FINE_CATEGORY: "LONG_COAT",
       B2B_PRICE: 45.9, B2C_MARKUP_PERCENT: defaultMarkup, B2C_PRICE_AUTO: "=H2*(1+I2/100)",
       COMPOSITION: "80% POLYESTER, 20% WOOL", TAGS: "WINTER,PREMIUM",
@@ -200,7 +200,7 @@ export function ProductsView() {
         const row = rows[i] as Parsed;
         row.__rowNum = i + 2;
         const barcodePreInitial = String(readRaw(row, "MODEL_NUMBER", "barcode") ?? "").trim();
-        const skuPre = String(readRaw(row, "NEW_SKU", "VARIANT_SKU", "sku") ?? "").trim();
+        const skuPre = String(readRaw(row, "AUTO_SKU", "NEW_SKU", "VARIANT_SKU", "sku") ?? "").trim();
         if (skuPre) {
           const parts = skuPre.split("-").map((s) => s.trim()).filter(Boolean);
           if (parts.length >= 3) {
@@ -272,7 +272,7 @@ export function ProductsView() {
         };
         const name = String(pick("NAME", "name") ?? "").trim();
         const barcode = normalizeProductCode(String(pick("MODEL_NUMBER", "barcode") ?? ""));
-        const sku = normalizeProductCode(String(pick("NEW_SKU", "VARIANT_SKU", "sku") ?? ""));
+        const sku = normalizeProductCode(String(pick("AUTO_SKU", "NEW_SKU", "VARIANT_SKU", "sku") ?? ""));
         const num = (v: unknown) => {
           const n = Number(String(v ?? "").replace(",", "."));
           return Number.isFinite(n) ? n : 0;
@@ -300,7 +300,7 @@ export function ProductsView() {
           barcode,
           name,
           sku,
-          otherSku: String(pick("OLD_SKU", "OTHER_SKU", "otherSku") ?? "").trim() || undefined,
+          otherSku: String(pick("OTHER_SKU", "OLD_SKU", "otherSku") ?? "").trim() || undefined,
           category: String(pick("CATEGORY", "category") ?? "").trim(),
           fineCategory: String(pick("FINE_CATEGORY") ?? "").trim() || undefined,
           size: String(pick("SIZE", "size") ?? "").trim(),
@@ -471,8 +471,8 @@ export function ProductsView() {
           <table className="w-full text-sm">
             <thead className="bg-foreground text-primary-foreground">
               <tr className="text-left">
-                <th className="px-4 py-3 font-semibold uppercase tracking-wider text-[11px]">NewSKU</th>
-                <th className="px-4 py-3 font-semibold uppercase tracking-wider text-[11px]">OldSKU</th>
+                <th className="px-4 py-3 font-semibold uppercase tracking-wider text-[11px]">SKU</th>
+                <th className="px-4 py-3 font-semibold uppercase tracking-wider text-[11px]">Other SKU</th>
                 <th className="px-4 py-3 font-semibold uppercase tracking-wider text-[11px]">Status</th>
                 <th className="px-4 py-3 font-semibold uppercase tracking-wider text-[11px]">Model</th>
                 <th className="px-4 py-3 font-semibold uppercase tracking-wider text-[11px]">Name</th>

@@ -361,17 +361,19 @@ async function upsertProductSize(client, productId, product) {
 }
 
 async function upsertSku(client, productId, colourId, sizeId, product, modelCode, colourCode, sizeCode) {
-  const skuCode = cleanCode(product.sku, `${modelCode}${colourCode}${sizeCode}`);
+  const skuCode = nullIfBlank(product.sku) ? cleanCode(product.sku, "") : null;
   const result = await client.query(
     `
       INSERT INTO cms.skus (
         legacy_id, product_id, colour_id, size_id, sku_code, barcode, other_sku,
         stock_qty, low_stock_threshold, image_url, status, created_at
       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'active', $11)
-      ON CONFLICT (sku_code) DO UPDATE SET
+      ON CONFLICT (legacy_id) DO UPDATE SET
         product_id = EXCLUDED.product_id,
         colour_id = EXCLUDED.colour_id,
         size_id = EXCLUDED.size_id,
+        sku_code = EXCLUDED.sku_code,
+        barcode = EXCLUDED.barcode,
         other_sku = EXCLUDED.other_sku,
         stock_qty = EXCLUDED.stock_qty,
         low_stock_threshold = EXCLUDED.low_stock_threshold,
@@ -1215,7 +1217,7 @@ async function importSnapshot(client, input) {
         if (row.id) {
           skuMap.set(row.id, skuId);
         }
-        const skuCode = cleanCode(row.sku, `${modelCode}${colourCode}${size.size_code}`);
+        const skuCode = nullIfBlank(row.sku) ? cleanCode(row.sku, "") : null;
         const productInfo = {
           productId,
           skuId,

@@ -20,7 +20,7 @@ export type Product = {
   composition?: { material: string; percentage: number }[];
   stock: number;
   lowStockThreshold: number;
-  /** OldSKU: optional legacy/factory SKU kept for search and product matching. */
+  /** Optional source/original product ID kept for search and product matching. */
   otherSku?: string;
   /** Weight in grams. */
   weight?: string;
