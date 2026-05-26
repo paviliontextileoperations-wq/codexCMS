@@ -8,42 +8,42 @@ All colors MUST be HSL.
 
 @layer base {
   :root {
-    /* Bauhaus minimalist palette */
-    --background: 40 30% 97%;
-    --foreground: 0 0% 4%;
+    /* Quiet luxury operational palette */
+    --background: 45 24% 96%;
+    --foreground: 0 0% 7%;
 
     --card: 0 0% 100%;
-    --card-foreground: 0 0% 4%;
+    --card-foreground: 0 0% 7%;
 
     --popover: 0 0% 100%;
-    --popover-foreground: 0 0% 4%;
+    --popover-foreground: 0 0% 7%;
 
-    /* Primary = ink black (buttons) */
-    --primary: 0 0% 4%;
+    --primary: 0 0% 7%;
     --primary-foreground: 0 0% 100%;
 
-    --secondary: 0 0% 96%;
-    --secondary-foreground: 0 0% 4%;
+    --secondary: 45 14% 93%;
+    --secondary-foreground: 0 0% 7%;
 
-    --muted: 0 0% 96%;
-    --muted-foreground: 0 0% 40%;
+    --muted: 45 14% 93%;
+    --muted-foreground: 0 0% 37%;
 
-    /* Accent = light blue */
-    --accent: 205 90% 60%;
+    --accent: 0 0% 7%;
     --accent-foreground: 0 0% 100%;
-    --accent-soft: 205 95% 94%;
+    --accent-soft: 45 14% 93%;
 
-    /* Bauhaus primaries (used sparingly as graphic accents) */
-    --bauhaus-red: 358 75% 52%;
+    /* Bauhaus tokens kept only for legacy error/warn fallbacks */
+    --bauhaus-red: 0 64% 33%;
     --bauhaus-yellow: 47 100% 55%;
     --bauhaus-blue: 215 80% 42%;
 
-    --destructive: 358 75% 52%;
+    --destructive: 0 64% 33%;
     --destructive-foreground: 0 0% 100%;
 
-    --border: 0 0% 8%;
-    --input: 0 0% 88%;
-    --ring: 0 0% 4%;
+    --success: 153 31% 17%;
+
+    --border: 40 9% 83%;
+    --input: 40 9% 83%;
+    --ring: 0 0% 7%;
 
     /* Bauhaus = sharp edges */
     --radius: 0px;
@@ -117,6 +117,7 @@ All colors MUST be HSL.
 
   html {
     font-family: 'Inter', system-ui, sans-serif;
+    font-size: 14px;
   }
 }
 
