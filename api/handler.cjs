@@ -1,6 +1,7 @@
 const { S3Client, PutObjectCommand } = require("@aws-sdk/client-s3");
 const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 const crypto = require("node:crypto");
+const zlib = require("node:zlib");
 const {
   adjustInventory,
   allocateSerial,
@@ -18,6 +19,7 @@ const S3_DOCUMENTS_PREFIX = trimSlashes(process.env.S3_DOCUMENTS_PREFIX || "docu
 const S3_PUBLIC_BASE_URL = (process.env.S3_PUBLIC_BASE_URL || "").replace(/\/+$/, "");
 const API_KEY = process.env.API_KEY || "";
 const CORS_ORIGIN = process.env.CORS_ORIGIN || "*";
+const SYNC_COMPRESSION_THRESHOLD_BYTES = 256 * 1024;
 
 const DATASETS = {
   products: "form.products.v1",
@@ -48,6 +50,30 @@ function response(statusCode, body, extraHeaders = {}) {
     },
     body: JSON.stringify(body),
   };
+}
+
+function encodeLargeSyncRecords(result) {
+  if (!Array.isArray(result?.records)) return result;
+  return {
+    ...result,
+    records: result.records.map((record) => {
+      if (typeof record?.raw !== "string") return record;
+      const rawBytes = Buffer.byteLength(record.raw);
+      if (rawBytes < SYNC_COMPRESSION_THRESHOLD_BYTES) return record;
+      const compressed = zlib.gzipSync(record.raw);
+      return {
+        ...record,
+        raw: compressed.toString("base64"),
+        encoding: "gzip-base64",
+        rawBytes,
+        encodedBytes: compressed.length,
+      };
+    }),
+  };
+}
+
+function clientAcceptsSyncCompression(payload) {
+  return Array.isArray(payload?.acceptEncoding) && payload.acceptEncoding.includes("gzip-base64");
 }
 
 function parseBody(event) {
@@ -693,7 +719,9 @@ async function handle(event) {
   }
 
   if (method === "POST" && path === "/sync/pull") {
-    return response(200, await cloudPull(parseBody(event)));
+    const body = parseBody(event);
+    const result = await cloudPull(body);
+    return response(200, clientAcceptsSyncCompression(body) ? encodeLargeSyncRecords(result) : result);
   }
 
   if (method === "POST" && path === "/sync/push") {

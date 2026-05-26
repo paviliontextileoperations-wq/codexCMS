@@ -1,7 +1,7 @@
 {
   "name": "pavilion-textile-cms",
   "private": true,
-  "version": "1.2.2-9",
+  "version": "1.2.2-10",
   "description": "Pavilion Textile Group B2B warehouse desktop application",
   "author": "Pavilion Textile Group",
   "type": "module",
@@ -35,7 +35,7 @@
   "build": {
     "appId": "com.paviliontextile.cms",
     "productName": "Pavilion Textile CMS",
-    "buildVersion": "1.2.2.9",
+    "buildVersion": "1.2.2.10",
     "directories": {
       "output": "release"
     },
@@ -57,7 +57,7 @@
         "nsis"
       ],
       "icon": "public/favicon.ico",
-      "artifactName": "${productName}-Setup-1.2.2.9.${ext}"
+      "artifactName": "${productName}-Setup-1.2.2.10.${ext}"
     },
     "nsis": {
       "oneClick": false,

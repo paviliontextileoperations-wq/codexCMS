@@ -5,7 +5,7 @@ const CLIENT_ID_KEY = "app.cloud.clientId";
 const CLOUD_READY_KEY = "app.cloud.ready";
 const PUSH_DEBOUNCE_MS = 1200;
 const PULL_INTERVAL_MS = 15_000;
-const INITIAL_TIMEOUT_MS = 5000;
+const INITIAL_TIMEOUT_MS = 15000;
 
 export const CLOUD_SYNC_KEYS = [
   "form.products.v1",

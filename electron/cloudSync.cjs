@@ -1,5 +1,6 @@
 const { createDatabaseClient, loadDotEnv } = require("./database.cjs");
 const { importSnapshot } = require("../scripts/db/import-localstorage.cjs");
+const zlib = require("node:zlib");
 
 const CORE_KEYS = [
   "form.products.v1",
@@ -100,6 +101,21 @@ async function apiRequest(path, payload) {
     throw new Error(body.message || `API request failed with ${response.status}`);
   }
   return body;
+}
+
+function decodeLargeSyncRecords(result) {
+  if (!Array.isArray(result?.records)) return result;
+  return {
+    ...result,
+    records: result.records.map((record) => {
+      if (record?.encoding !== "gzip-base64" || typeof record.raw !== "string") return record;
+      return {
+        ...record,
+        raw: zlib.gunzipSync(Buffer.from(record.raw, "base64")).toString("utf8"),
+        encoding: undefined,
+      };
+    }),
+  };
 }
 
 async function ensureAppSettings(client) {
@@ -843,8 +859,8 @@ function rowToRecord(row) {
 }
 
 async function cloudPull(payload = {}) {
-  const apiResult = await apiRequest("/sync/pull", payload);
-  if (apiResult) return apiResult;
+  const apiResult = await apiRequest("/sync/pull", { ...payload, acceptEncoding: ["gzip-base64"] });
+  if (apiResult) return decodeLargeSyncRecords(apiResult);
 
   const keys = Array.isArray(payload.keys) && payload.keys.length > 0 ? normalizeSyncKeys(payload.keys) : CORE_KEYS;
   const client = createDatabaseClient();
