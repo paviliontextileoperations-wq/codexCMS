@@ -174,6 +174,7 @@ export function CustomersView() {
       {filtered.length === 0 ? (
         <EmptyState title="No customers yet" action={<Button onClick={openNew}><Plus /> New customer</Button>} />
       ) : (
+        <div className="max-h-[calc(100vh-330px)] min-h-[520px] overflow-y-auto pr-2">
         <div className="grid grid-cols-1 gap-px bg-foreground/10 md:grid-cols-2 lg:grid-cols-3">
           {filtered.map((c) => {
             const cSales = sales.filter((s) => s.customerId === c.id);
@@ -183,18 +184,18 @@ export function CustomersView() {
               <button
                 key={c.id}
                 onClick={() => setDetail(c)}
-                className="group relative flex flex-col gap-3 border-2 border-transparent bg-background p-5 text-left transition-colors hover:border-foreground"
+                className="group relative flex min-h-[206px] flex-col gap-3 border-2 border-transparent bg-background p-5 text-left transition-colors hover:border-foreground"
               >
                  <div className="flex items-start justify-between">
-                   <div>
-                     <div className="text-[10px] uppercase tracking-[0.2em] text-muted-foreground">
+                   <div className="min-w-0 pr-3">
+                     <div className="break-words text-[10px] uppercase tracking-[0.2em] text-muted-foreground">
                        ID · {c.id} · {c.clientType ?? "B2B"}{c.businessType ? ` · ${c.businessType}` : ""}
                      </div>
-                     <h3 className="mt-1 font-display text-xl leading-tight">
+                     <h3 className="mt-1 break-words font-display text-xl leading-tight">
                        {[c.name, c.surname].filter(Boolean).join(" ")}
                      </h3>
                      {c.businessName && (
-                       <div className="text-xs text-muted-foreground">{c.businessName}</div>
+                       <div className="break-words text-xs text-muted-foreground">{c.businessName}</div>
                      )}
                    </div>
                    <span
@@ -223,6 +224,7 @@ export function CustomersView() {
               </button>
             );
           })}
+        </div>
         </div>
       )}
 

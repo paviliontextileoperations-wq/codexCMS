@@ -459,7 +459,7 @@ export function ProductsView() {
         <input
           value={q}
           onChange={(e) => setQ(e.target.value)}
-          placeholder="Search by name, model, NewSKU, OldSKU..."
+          placeholder="Search by name, model, SKU, other SKU..."
           className="h-11 w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground"
         />
       </div>
@@ -467,22 +467,23 @@ export function ProductsView() {
       {filtered.length === 0 ? (
         <EmptyState title="No products yet" description="Add your first product to start selling." action={<Button onClick={openNew}><Plus /> New product</Button>} />
       ) : (
-        <div className="border-2 border-foreground">
-          <table className="w-full text-sm">
-            <thead className="bg-foreground text-primary-foreground">
+        <div className="border-2 border-foreground bg-background">
+          <div className="max-h-[calc(100vh-300px)] min-h-[520px] overflow-auto">
+          <table className="w-full min-w-[1440px] table-fixed text-sm">
+            <thead className="sticky top-0 z-10 bg-foreground text-primary-foreground shadow-[0_1px_0_0_hsl(var(--foreground))]">
               <tr className="text-left">
-                <th className="px-4 py-3 font-semibold uppercase tracking-wider text-[11px]">SKU</th>
-                <th className="px-4 py-3 font-semibold uppercase tracking-wider text-[11px]">Other SKU</th>
-                <th className="px-4 py-3 font-semibold uppercase tracking-wider text-[11px]">Status</th>
-                <th className="px-4 py-3 font-semibold uppercase tracking-wider text-[11px]">Model</th>
-                <th className="px-4 py-3 font-semibold uppercase tracking-wider text-[11px]">Name</th>
-                <th className="px-4 py-3 font-semibold uppercase tracking-wider text-[11px]">Category</th>
-                <th className="px-4 py-3 font-semibold uppercase tracking-wider text-[11px]">Colour</th>
-                <th className="px-4 py-3 font-semibold uppercase tracking-wider text-[11px]">Size</th>
-                <th className="px-4 py-3 text-right font-semibold uppercase tracking-wider text-[11px]">B2B price</th>
-                <th className="px-4 py-3 text-right font-semibold uppercase tracking-wider text-[11px]">B2C price</th>
-                <th className="px-4 py-3 text-right font-semibold uppercase tracking-wider text-[11px]">Quantity</th>
-                <th className="px-4 py-3" />
+                <th className="w-[140px] px-4 py-4 font-semibold uppercase tracking-wider text-[11px]">SKU</th>
+                <th className="w-[170px] px-4 py-4 font-semibold uppercase tracking-wider text-[11px]">Other SKU</th>
+                <th className="w-[130px] px-4 py-4 font-semibold uppercase tracking-wider text-[11px]">Status</th>
+                <th className="w-[160px] px-4 py-4 font-semibold uppercase tracking-wider text-[11px]">Model</th>
+                <th className="w-[230px] px-4 py-4 font-semibold uppercase tracking-wider text-[11px]">Name</th>
+                <th className="w-[140px] px-4 py-4 font-semibold uppercase tracking-wider text-[11px]">Category</th>
+                <th className="w-[120px] px-4 py-4 font-semibold uppercase tracking-wider text-[11px]">Colour</th>
+                <th className="w-[90px] px-4 py-4 font-semibold uppercase tracking-wider text-[11px]">Size</th>
+                <th className="w-[120px] px-4 py-4 text-right font-semibold uppercase tracking-wider text-[11px]">B2B price</th>
+                <th className="w-[120px] px-4 py-4 text-right font-semibold uppercase tracking-wider text-[11px]">B2C price</th>
+                <th className="w-[100px] px-4 py-4 text-right font-semibold uppercase tracking-wider text-[11px]">Quantity</th>
+                <th className="w-[70px] px-4 py-4" />
               </tr>
             </thead>
             <tbody>
@@ -494,10 +495,10 @@ export function ProductsView() {
                 <tr
                   key={p.id}
                   onDoubleClick={() => !isPending && openEdit(p)}
-                  className={`border-t border-foreground/10 hover:bg-secondary cursor-pointer select-none ${isPending ? "opacity-50 bg-muted/30 pointer-events-none" : ""}`}
+                  className={`h-[66px] border-t border-foreground/10 hover:bg-secondary cursor-pointer select-none ${isPending ? "opacity-50 bg-muted/30 pointer-events-none" : ""}`}
                 >
-                  <td className="px-4 py-3 font-mono-tabular text-xs">{p.sku || "—"}</td>
-                  <td className="px-4 py-3 font-mono-tabular text-xs text-muted-foreground">{p.otherSku || "—"}</td>
+                  <td className="truncate px-4 py-3 font-mono-tabular text-xs">{p.sku || "—"}</td>
+                  <td className="truncate px-4 py-3 font-mono-tabular text-xs text-muted-foreground">{p.otherSku || "—"}</td>
                   <td className="px-4 py-3">
                     <span
                       className={`inline-flex items-center px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.15em] border whitespace-nowrap ${meta.className}`}
@@ -506,13 +507,13 @@ export function ProductsView() {
                       {meta.label}
                     </span>
                   </td>
-                  <td className="px-4 py-3 font-mono-tabular text-xs">{p.barcode}</td>
-                  <td className="px-4 py-3 font-medium">{p.name}</td>
+                  <td className="truncate px-4 py-3 font-mono-tabular text-xs">{p.barcode}</td>
+                  <td className="truncate px-4 py-3 font-medium" title={p.name}>{p.name}</td>
                   <td className="px-4 py-3">{p.category}</td>
-                  <td className="px-4 py-3 text-muted-foreground">{p.color || "—"}</td>
-                  <td className="px-4 py-3 text-muted-foreground">{p.size || "—"}</td>
-                  <td className="px-4 py-3 text-right font-mono-tabular">{fmtMoney(p.price)}</td>
-                  <td className="px-4 py-3 text-right font-mono-tabular">
+                  <td className="truncate px-4 py-3 text-muted-foreground">{p.color || "—"}</td>
+                  <td className="truncate px-4 py-3 text-muted-foreground">{p.size || "—"}</td>
+                  <td className="px-4 py-3 text-right font-mono-tabular whitespace-nowrap">{fmtMoney(p.price)}</td>
+                  <td className="px-4 py-3 text-right font-mono-tabular whitespace-nowrap">
                     {fmtMoney(getB2cUnitPrice(p.price, p.b2cMarkup, p.b2cPrice))}
                   </td>
                   <td className="px-4 py-3 text-right font-mono-tabular">
@@ -555,6 +556,7 @@ export function ProductsView() {
               })}
             </tbody>
           </table>
+          </div>
         </div>
       )}
 
