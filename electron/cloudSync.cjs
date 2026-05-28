@@ -68,6 +68,7 @@ const DELIVERY_STATUSES = new Set([
 ]);
 const PAYMENT_STATUSES = new Set(["PAID", "PARTIAL", "OPEN"]);
 const PAYMENT_METHODS = new Set(["CARD", "CASH", "TRANSFER", "OTHER"]);
+const SYNC_COMPRESSION_THRESHOLD_BYTES = 256 * 1024;
 
 function oneOf(value, allowed, fallback) {
   return allowed.has(value) ? value : fallback;
@@ -113,6 +114,26 @@ function decodeLargeSyncRecords(result) {
         ...record,
         raw: zlib.gunzipSync(Buffer.from(record.raw, "base64")).toString("utf8"),
         encoding: undefined,
+      };
+    }),
+  };
+}
+
+function encodeLargeSyncRecords(payload) {
+  if (!Array.isArray(payload?.records)) return payload;
+  return {
+    ...payload,
+    records: payload.records.map((record) => {
+      if (typeof record?.raw !== "string") return record;
+      const rawBytes = Buffer.byteLength(record.raw);
+      if (rawBytes < SYNC_COMPRESSION_THRESHOLD_BYTES) return record;
+      const compressed = zlib.gzipSync(record.raw);
+      return {
+        ...record,
+        raw: compressed.toString("base64"),
+        encoding: "gzip-base64",
+        rawBytes,
+        encodedBytes: compressed.length,
       };
     }),
   };
@@ -893,11 +914,12 @@ async function cloudPull(payload = {}) {
 }
 
 async function cloudPush(payload = {}) {
-  const apiResult = await apiRequest("/sync/push", payload);
+  const apiResult = await apiRequest("/sync/push", encodeLargeSyncRecords(payload));
   if (apiResult) return apiResult;
 
   const records = Array.isArray(payload.records) ? payload.records : [];
   const clientId = payload.clientId ?? "desktop";
+  const skipNormalized = Boolean(payload.skipNormalized);
   const client = createDatabaseClient();
   await client.connect();
   try {
@@ -910,7 +932,7 @@ async function cloudPush(payload = {}) {
       if (NORMALIZED_SYNC_KEYS.has(record.key)) shouldSyncNormalized = true;
     }
     await client.query("COMMIT");
-    if (shouldSyncNormalized) {
+    if (shouldSyncNormalized && !skipNormalized) {
       await syncNormalizedSnapshot(client);
     }
     return {

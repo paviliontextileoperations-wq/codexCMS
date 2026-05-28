@@ -26,6 +26,7 @@ interface Window {
     }>;
     cloudPush: (payload?: {
       clientId?: string;
+      skipNormalized?: boolean;
       records?: Array<{
         key: string;
         raw: string | null;

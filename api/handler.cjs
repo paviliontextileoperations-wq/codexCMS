@@ -72,6 +72,21 @@ function encodeLargeSyncRecords(result) {
   };
 }
 
+function decodeLargeSyncRecords(payload) {
+  if (!Array.isArray(payload?.records)) return payload;
+  return {
+    ...payload,
+    records: payload.records.map((record) => {
+      if (record?.encoding !== "gzip-base64" || typeof record.raw !== "string") return record;
+      return {
+        ...record,
+        raw: zlib.gunzipSync(Buffer.from(record.raw, "base64")).toString("utf8"),
+        encoding: undefined,
+      };
+    }),
+  };
+}
+
 function clientAcceptsSyncCompression(payload) {
   return Array.isArray(payload?.acceptEncoding) && payload.acceptEncoding.includes("gzip-base64");
 }
@@ -725,7 +740,7 @@ async function handle(event) {
   }
 
   if (method === "POST" && path === "/sync/push") {
-    return response(200, await cloudPush(parseBody(event)));
+    return response(200, await cloudPush(decodeLargeSyncRecords(parseBody(event))));
   }
 
   if (method === "POST" && path === "/images/upload-url") {

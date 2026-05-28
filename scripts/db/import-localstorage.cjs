@@ -75,6 +75,28 @@ function cleanCode(value, fallback) {
   return text.replace(/\s+/g, "-").replace(/[^A-Za-z0-9._-]/g, "").toUpperCase();
 }
 
+const COLOUR_CODE_ALIASES = new Map([
+  ["NEGRO", "N"],
+  ["NGR", "N"],
+  ["AMARILLO", "A"],
+  ["AM", "A"],
+]);
+
+const SIZE_CODE_ALIASES = new Map([
+  ["TU", "U"],
+  ["T", "U"],
+]);
+
+function normalizeColourCode(value, fallback = "UNK") {
+  const code = cleanCode(value, fallback);
+  return COLOUR_CODE_ALIASES.get(code) ?? code;
+}
+
+function normalizeSizeCode(value, fallback = "ONE") {
+  const code = cleanCode(value, fallback);
+  return SIZE_CODE_ALIASES.get(code) ?? code;
+}
+
 function normalizeImageKey(value) {
   return String(value ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
 }
@@ -169,7 +191,7 @@ function modelCodeFor(product, index) {
 function colourCodeFor(product) {
   const explicit = product.colourCode ?? product.colorCode ?? product.colour_code;
   if (explicit) {
-    return cleanCode(explicit, "UNK");
+    return normalizeColourCode(explicit, "UNK");
   }
 
   const modelCode = nullIfBlank(product.barcode);
@@ -178,7 +200,7 @@ function colourCodeFor(product) {
   if (modelCode && sku?.startsWith(modelCode) && size && sku.endsWith(size)) {
     const middle = sku.slice(modelCode.length, sku.length - size.length).replace(/^-|-$/g, "");
     if (middle) {
-      return cleanCode(middle, "UNK");
+      return normalizeColourCode(middle, "UNK");
     }
   }
 
@@ -187,7 +209,7 @@ function colourCodeFor(product) {
     .split(/[\s/_-]+/)
     .map((part) => part[0])
     .join("");
-  return cleanCode(initials || color.slice(0, 3), "UNK");
+  return normalizeColourCode(initials || color.slice(0, 3), "UNK");
 }
 
 function sizeSort(sizeCode) {
@@ -336,7 +358,7 @@ async function upsertProductColour(client, productId, product) {
 }
 
 async function upsertProductSize(client, productId, product) {
-  const sizeCode = cleanCode(product.size ?? product.size_code, "ONE");
+  const sizeCode = normalizeSizeCode(product.size ?? product.size_code, "ONE");
   const result = await client.query(
     `
       INSERT INTO cms.product_sizes (
@@ -362,39 +384,102 @@ async function upsertProductSize(client, productId, product) {
 
 async function upsertSku(client, productId, colourId, sizeId, product, modelCode, colourCode, sizeCode) {
   const skuCode = nullIfBlank(product.sku) ? cleanCode(product.sku, "") : null;
-  const result = await client.query(
+  const legacyId = nullIfBlank(product.id);
+  const barcode = nullIfBlank(product.barcodeValue ?? product.ean ?? product.upc);
+  const otherSku = nullIfBlank(product.otherSku);
+  const stockQty = Math.max(0, Math.round(toNumber(product.stock, 0)));
+  const lowStockThreshold = Math.max(0, Math.round(toNumber(product.lowStockThreshold, 5)));
+  const imageUrl = nullIfBlank(product.image);
+  const createdAt = toDate(product.createdAt);
+  const existing = await client.query(
     `
-      INSERT INTO cms.skus (
-        legacy_id, product_id, colour_id, size_id, sku_code, barcode, other_sku,
-        stock_qty, low_stock_threshold, image_url, status, created_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'active', $11)
-      ON CONFLICT (legacy_id) DO UPDATE SET
-        product_id = EXCLUDED.product_id,
-        colour_id = EXCLUDED.colour_id,
-        size_id = EXCLUDED.size_id,
-        sku_code = EXCLUDED.sku_code,
-        barcode = EXCLUDED.barcode,
-        other_sku = EXCLUDED.other_sku,
-        stock_qty = EXCLUDED.stock_qty,
-        low_stock_threshold = EXCLUDED.low_stock_threshold,
-        image_url = COALESCE(EXCLUDED.image_url, cms.skus.image_url),
-        updated_at = now()
-      RETURNING id
+      SELECT id
+      FROM cms.skus
+      WHERE ($1::text IS NOT NULL AND legacy_id = $1)
+         OR ($5::text IS NOT NULL AND sku_code = $5)
+         OR (product_id = $2 AND colour_id = $3 AND size_id = $4)
+      ORDER BY
+        CASE
+          WHEN $1::text IS NOT NULL AND legacy_id = $1 THEN 0
+          WHEN $5::text IS NOT NULL AND sku_code = $5 THEN 1
+          ELSE 2
+        END
+      LIMIT 1
     `,
-    [
-      nullIfBlank(product.id),
-      productId,
-      colourId,
-      sizeId,
-      skuCode,
-      nullIfBlank(product.barcodeValue ?? product.ean ?? product.upc),
-      nullIfBlank(product.otherSku),
-      Math.max(0, Math.round(toNumber(product.stock, 0))),
-      Math.max(0, Math.round(toNumber(product.lowStockThreshold, 5))),
-      nullIfBlank(product.image),
-      toDate(product.createdAt),
-    ],
+    [legacyId, productId, colourId, sizeId, skuCode],
   );
+
+  let skuId;
+  if (existing.rows[0]?.id) {
+    const result = await client.query(
+      `
+        UPDATE cms.skus
+        SET
+          legacy_id = COALESCE($1, legacy_id),
+          product_id = $2,
+          colour_id = $3,
+          size_id = $4,
+          sku_code = COALESCE($5, sku_code),
+          barcode = $6,
+          other_sku = $7,
+          stock_qty = $8,
+          low_stock_threshold = $9,
+          image_url = COALESCE($10, image_url),
+          updated_at = now()
+        WHERE id = $11
+        RETURNING id
+      `,
+      [
+        legacyId,
+        productId,
+        colourId,
+        sizeId,
+        skuCode,
+        barcode,
+        otherSku,
+        stockQty,
+        lowStockThreshold,
+        imageUrl,
+        existing.rows[0].id,
+      ],
+    );
+    skuId = result.rows[0].id;
+  } else {
+    const result = await client.query(
+      `
+        INSERT INTO cms.skus (
+          legacy_id, product_id, colour_id, size_id, sku_code, barcode, other_sku,
+          stock_qty, low_stock_threshold, image_url, status, created_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'active', $11)
+        ON CONFLICT (legacy_id) DO UPDATE SET
+          product_id = EXCLUDED.product_id,
+          colour_id = EXCLUDED.colour_id,
+          size_id = EXCLUDED.size_id,
+          sku_code = EXCLUDED.sku_code,
+          barcode = EXCLUDED.barcode,
+          other_sku = EXCLUDED.other_sku,
+          stock_qty = EXCLUDED.stock_qty,
+          low_stock_threshold = EXCLUDED.low_stock_threshold,
+          image_url = COALESCE(EXCLUDED.image_url, cms.skus.image_url),
+          updated_at = now()
+        RETURNING id
+      `,
+      [
+        legacyId,
+        productId,
+        colourId,
+        sizeId,
+        skuCode,
+        barcode,
+        otherSku,
+        stockQty,
+        lowStockThreshold,
+        imageUrl,
+        createdAt,
+      ],
+    );
+    skuId = result.rows[0].id;
+  }
 
   if (product.image) {
     await client.query(
@@ -403,11 +488,10 @@ async function upsertSku(client, productId, colourId, sizeId, product, modelCode
           product_id, colour_id, sku_id, image_role, url, sort_order
         ) VALUES ($1, $2, $3, 'sku', $4, 100)
       `,
-      [productId, colourId, result.rows[0].id, product.image],
+      [productId, colourId, skuId, product.image],
     );
   }
 
-  const stockQty = Math.max(0, Math.round(toNumber(product.stock, 0)));
   if (stockQty > 0) {
     await client.query(
       `
@@ -421,7 +505,7 @@ async function upsertSku(client, productId, colourId, sizeId, product, modelCode
       `,
       [
         `initial:${product.id ?? skuCode}`,
-        result.rows[0].id,
+        skuId,
         stockQty,
         "Imported from desktop stock",
         toDate(product.createdAt),
@@ -429,7 +513,7 @@ async function upsertSku(client, productId, colourId, sizeId, product, modelCode
     );
   }
 
-  return result.rows[0].id;
+  return skuId;
 }
 
 async function upsertMeasurements(client, productId, sizeId, fineCategory, product) {
@@ -1187,6 +1271,10 @@ async function importSnapshot(client, input) {
   try {
     await client.query("BEGIN");
     await client.query("SET CONSTRAINTS ALL DEFERRED");
+    // Legacy supplier data can map several old colour codes to the same display
+    // name (for example NGR and N both mean BLACK). The SKU code remains the
+    // authoritative identifier, so duplicate colour labels must not block sync.
+    await client.query("ALTER TABLE cms.product_colours DROP CONSTRAINT IF EXISTS product_colours_product_id_colour_name_key");
 
     for (const [modelCode, rows] of groupProducts(products)) {
       const productId = await upsertProduct(client, modelCode, rows);

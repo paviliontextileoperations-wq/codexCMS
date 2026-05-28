@@ -147,6 +147,12 @@ export function POSView() {
     }
   }, [paymentOpen, showNewCustomer, showSelectCustomer, lines.length]);
 
+  useEffect(() => {
+    if (customer && lines.length > 0 && !transportMethod) {
+      setTransportMethod("PICKUP");
+    }
+  }, [customer, lines.length, transportMethod]);
+
   const customerMatches = useMemo(() => {
     if (!customerQuery.trim()) return [];
     return customersStore
@@ -422,6 +428,7 @@ export function POSView() {
 
   function openPayment() {
     if (!customer || lines.length === 0) return;
+    if (!effectiveTransportMethod) setTransportMethod("PICKUP");
     setPaymentChoice("FULL");
     setPartialAmount("");
     setPaymentMethod("CARD");
@@ -936,7 +943,7 @@ export function POSView() {
                   <Button
                     className="w-full rounded-none"
                     size="lg"
-                    disabled={!customer || lines.length === 0 || !effectiveTransportMethod}
+                    disabled={!customer || lines.length === 0}
                     onClick={openPayment}
                   >
                     <Wallet className="h-4 w-4" />

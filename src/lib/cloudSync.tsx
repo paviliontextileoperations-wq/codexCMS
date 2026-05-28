@@ -224,7 +224,11 @@ export function CloudSyncProvider({ children }: { children: ReactNode }) {
     syncingRef.current = true;
     setStatus((current) => ({ ...current, ready: true, phase: "syncing" }));
     try {
-      await desktopApp.cloudPush({ clientId: getClientId(originalSetItemRef.current), records });
+      await desktopApp.cloudPush({
+        clientId: getClientId(originalSetItemRef.current),
+        records,
+        skipNormalized: true,
+      });
       dirtyRef.current = false;
       dirtyKeysRef.current.clear();
       setStatus({
