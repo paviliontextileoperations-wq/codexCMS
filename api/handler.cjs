@@ -156,18 +156,23 @@ function toImageRole(code) {
 }
 
 function parseImageFileName(fileName) {
-  const upper = String(fileName || "").trim().toUpperCase();
-  const match = upper.match(/^([A-Z0-9-]+)[_-](F|B|MF|MB|D\d+|MX\d+|S\d+)\.(JPG|JPEG|PNG|WEBP)$/);
-  if (!match) {
-    const error = new Error("Invalid image file name. Expected SKU-F.JPG, SKU-B.JPG, SKU-D1.JPG, SKU-MF.JPG, SKU-S1.JPG.");
+  const raw = String(fileName || "").trim();
+  const imageMatch = raw.match(/^(.+)\.(JPG|JPEG|PNG|WEBP|GIF|AVIF|HEIC)$/i);
+  if (!imageMatch) {
+    const error = new Error("Invalid image file. Expected JPG, JPEG, PNG, WEBP, GIF, AVIF, or HEIC.");
     error.statusCode = 400;
     throw error;
   }
+  const rawBase = imageMatch[1].trim();
+  const extension = imageMatch[2].toUpperCase() === "JPEG" ? "JPG" : imageMatch[2].toUpperCase();
+  const strict = rawBase.toUpperCase().match(/^(.+)[_-](F|B|MF|MB|D\d+|MX\d+|S\d+)$/);
+  const prefix = normalizeImageKey(strict ? strict[1] : rawBase) || "IMAGE";
+  const code = strict ? strict[2].toUpperCase() : "IMG";
   return {
-    fileName: upper.replace(/\.JPEG$/, ".JPG"),
-    prefix: match[1],
-    code: match[2],
-    extension: match[3] === "JPEG" ? "JPG" : match[3],
+    fileName: `${prefix}${strict ? `-${code}` : ""}.${extension}`,
+    prefix,
+    code,
+    extension,
   };
 }
 
@@ -199,7 +204,6 @@ async function findProductForImagePrefix(client, prefix) {
       JOIN cms.products p ON p.id = s.product_id
       WHERE regexp_replace(upper(s.sku_code), '[^A-Z0-9]', '', 'g') = $1
          OR regexp_replace(upper(COALESCE(s.other_sku, '')), '[^A-Z0-9]', '', 'g') = $1
-         OR regexp_replace(upper(p.model_code), '[^A-Z0-9]', '', 'g') = $1
       ORDER BY CASE WHEN regexp_replace(upper(s.sku_code), '[^A-Z0-9]', '', 'g') = $1 THEN 0 ELSE 1 END
       LIMIT 1
     `,
@@ -215,9 +219,12 @@ function imageUrlForKey(cloudKey) {
 }
 
 function contentTypeFor(extension, requested) {
-  if (requested && /^image\/(jpeg|png|webp)$/i.test(requested)) return requested.toLowerCase();
+  if (requested && /^image\/[a-z0-9.+-]+$/i.test(requested)) return requested.toLowerCase();
   if (extension === "PNG") return "image/png";
   if (extension === "WEBP") return "image/webp";
+  if (extension === "GIF") return "image/gif";
+  if (extension === "AVIF") return "image/avif";
+  if (extension === "HEIC") return "image/heic";
   return "image/jpeg";
 }
 
@@ -273,10 +280,10 @@ async function buildImageAsset(fileName, contentType) {
   try {
     const target = await findProductForImagePrefix(client, parsed.prefix);
     const modelCode = (target?.model_code || parsed.prefix).toUpperCase();
-    const skuCode = (target?.sku_code || parsed.prefix).toUpperCase();
-    const category = slugPart(target?.category, "uncategorized");
+    const skuCode = target?.sku_code ? String(target.sku_code).toUpperCase() : null;
+    const category = target ? slugPart(target.category, "uncategorized") : "unmatched";
     const fineCategory = slugPart(target?.fine_category, "general");
-    const directoryKey = ["women", category, fineCategory, modelCode, skuCode].join("/");
+    const directoryKey = ["women", category, fineCategory, modelCode, skuCode || "unbound"].join("/");
     const cloudKey = [S3_BASE_PREFIX, directoryKey, parsed.fileName].filter(Boolean).join("/");
     const mimeType = contentTypeFor(parsed.extension, contentType);
 
@@ -308,8 +315,8 @@ async function createUploadUrl(payload) {
     Key: asset.cloudKey,
     ContentType: asset.mimeType,
     Metadata: {
-      sku: asset.skuCode,
-      model: asset.modelCode,
+      sku: asset.skuCode || "",
+      model: asset.modelCode || "",
       imageCode: asset.imageCode,
       imageRole: asset.imageRole,
     },

@@ -62,18 +62,42 @@ export const galleryStore = {
   },
 };
 
-// Filename: ALL CAPS basename, JPG extension.
-// Accepts PREFIX_CODE.JPG and SKU-CODE.JPG for operators who append "-F" to the SKU.
-// Codes: F, B, MF, MB, D<n>, MX<n>, S<n>
-export const FILENAME_RE = /^([A-Z0-9-]+)[_-](F|B|MF|MB|D\d+|MX\d+|S\d+)\.JPG$/;
+// Strict role naming is still supported, but operators may also upload
+// SKU.JPG / SKU.PNG or any other image. Non-matching names stay unbound.
+export const FILENAME_RE = /^(.+)\.(JPG|JPEG|PNG|WEBP|GIF|AVIF|HEIC)$/i;
+const STRICT_ROLE_RE = /^(.+)[_-](F|B|MF|MB|D\d+|MX\d+|S\d+)$/i;
 
 export function parseFileName(name: string):
-  | { ok: true; prefix: string; code: string; separator: "_" | "-" }
+  | { ok: true; prefix: string; code: string; separator?: "_" | "-"; strict: boolean; fileName: string; extension: string }
   | { ok: false } {
-  const m = name.match(FILENAME_RE);
-  if (!m) return { ok: false };
-  const separator = name.slice(m[1].length, m[1].length + 1) as "_" | "-";
-  return { ok: true, prefix: m[1], code: m[2], separator };
+  const match = String(name || "").trim().match(FILENAME_RE);
+  if (!match) return { ok: false };
+  const rawBase = match[1].trim();
+  const extension = match[2].toUpperCase() === "JPEG" ? "JPG" : match[2].toUpperCase();
+  const strict = rawBase.toUpperCase().match(STRICT_ROLE_RE);
+  if (strict) {
+    const separator = rawBase.slice(strict[1].length, strict[1].length + 1) as "_" | "-";
+    const prefix = normalizeImageKey(strict[1]);
+    const code = strict[2].toUpperCase();
+    return {
+      ok: true,
+      prefix: prefix || "IMAGE",
+      code,
+      separator,
+      strict: true,
+      fileName: `${prefix || "IMAGE"}-${code}.${extension}`,
+      extension,
+    };
+  }
+  const prefix = normalizeImageKey(rawBase);
+  return {
+    ok: true,
+    prefix: prefix || "IMAGE",
+    code: "IMG",
+    strict: false,
+    fileName: `${prefix || "IMAGE"}.${extension}`,
+    extension,
+  };
 }
 
 export function imageRoleFromCode(code: string): ImageRole {
@@ -103,13 +127,14 @@ function slugPart(value: string | undefined, fallback: string): string {
 export function findProductForImagePrefix(prefix: string, products: Product[]) {
   const target = normalizeImageKey(prefix);
   return products.find((product) => {
-    const candidates = [product.sku, product.barcode, product.otherSku].filter(Boolean) as string[];
+    const candidates = [product.sku, product.otherSku].filter(Boolean) as string[];
     return candidates.some((candidate) => normalizeImageKey(candidate) === target);
   });
 }
 
 export function buildImageDirectory(product: Product | undefined, prefix: string): string {
-  const category = slugPart(product?.category, "uncategorized");
+  if (!product) return ["women", "unmatched", "general", prefix.toUpperCase(), "unbound"].join("/");
+  const category = slugPart(product.category, "uncategorized");
   const fineCategory = slugPart(product?.fineCategory, "general");
   const modelCode = (product?.barcode || prefix).toUpperCase();
   const skuCode = (product?.sku || prefix).toUpperCase();
@@ -117,7 +142,7 @@ export function buildImageDirectory(product: Product | undefined, prefix: string
 }
 
 export function enrichGalleryImage(
-  parsed: { prefix: string; code: string },
+  parsed: { prefix: string; code: string; fileName?: string },
   fileName: string,
   dataUrl: string,
   products: Product[],
@@ -126,9 +151,9 @@ export function enrichGalleryImage(
   return {
     prefix: parsed.prefix,
     code: parsed.code,
-    fileName,
+    fileName: parsed.fileName ?? fileName,
     dataUrl,
-    sku: product?.sku ?? parsed.prefix,
+    sku: product?.sku,
     modelCode: product?.barcode ?? parsed.prefix,
     productId: product?.id,
     directory: buildImageDirectory(product, parsed.prefix),

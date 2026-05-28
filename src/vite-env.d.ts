@@ -48,7 +48,7 @@ interface Window {
         productId?: string | null;
         skuId?: string | null;
         modelCode: string;
-        skuCode: string;
+        skuCode?: string | null;
         imageCode: string;
         imageRole: string;
         fileName: string;

@@ -21,6 +21,7 @@ import { FINE_CATEGORY_WEIGHT_KG, FALLBACK_WEIGHT_KG } from "@/lib/productWeight
 import { findDuplicateProductCode, normalizeProductCode } from "@/lib/productCodes";
 import { getDefaultB2cMarkupPercent } from "@/lib/productSettings";
 import { inventoryStore } from "@/lib/inventoryStore";
+import { adjustProductInventoryInCloud, productInventorySku } from "@/lib/cloudInventory";
 
 const SIZES = ["XXS", "XS", "S", "M", "L", "XL", "XXL", "U"] as const;
 
@@ -349,7 +350,7 @@ export function ProductForm({
     toast.success(`Generated ${next.length} variation${next.length === 1 ? "" : "s"}`);
   }
 
-  function save() {
+  async function save() {
     setSubmitted(true);
     // General — all required
     const modelCode = normalizeProductCode(model);
@@ -411,10 +412,11 @@ export function ProductForm({
         ? productsStore.all().filter((p) => p.barcode === modelCode).map((p) => p.id)
         : [];
       const keptIds = new Set<string>();
+      let cloudStockFailures = 0;
       const variationsToSave = variations.length > 0
         ? variations
         : [blankVariation()];
-      variationsToSave.forEach((v) => {
+      for (const v of variationsToSave) {
         const existing = initial
           ? productsStore.all().find((p) => p.id === v.id)
           : undefined;
@@ -458,21 +460,51 @@ export function ProductForm({
           image: (colourImages[v.colourCode]?.[0]) || (colourImages[colourCode]?.[0]) || variationImages[v.id] || undefined,
         });
         if (existing && previousQty !== nextQty) {
+          const movementId = `product-form-stock-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+          let remotePreviousQty = previousQty;
+          let remoteQuantityChange = nextQty - previousQty;
+          let remoteCreatedAt: number | undefined;
+          try {
+            const remote = await adjustProductInventoryInCloud({
+              id: movementId,
+              product: saved,
+              movementType: "stocktake",
+              previousQty,
+              newQty: nextQty,
+              reason: "stocktake_correction",
+              warehouse: "Main Warehouse",
+              location: "A-01-01",
+              notes: "Product quantity edited from product form",
+              actor: "desktop",
+            });
+            if (remote?.ok) {
+              remotePreviousQty = remote.previousQty ?? remotePreviousQty;
+              remoteQuantityChange = remote.quantityChange ?? remoteQuantityChange;
+              remoteCreatedAt = remote.movement?.createdAt;
+            }
+          } catch (error) {
+            console.warn("Cloud stock update failed from product form.", error);
+            cloudStockFailures++;
+          }
           inventoryStore.log({
-            movementType: "adjustment",
+            id: movementId,
+            movementType: "stocktake",
             productId: saved.id,
-            sku: saved.sku || saved.barcode,
-            previousQty,
-            quantityChange: nextQty - previousQty,
+            sku: productInventorySku(saved),
+            previousQty: remotePreviousQty,
+            quantityChange: remoteQuantityChange,
             newQty: nextQty,
             reason: "stocktake_correction",
             notes: "Product quantity edited from product form",
+            warehouse: "Main Warehouse",
+            location: "A-01-01",
+            createdAt: remoteCreatedAt,
           });
         } else if (!existing && nextQty > 0) {
           inventoryStore.log({
             movementType: "initial_import",
             productId: saved.id,
-            sku: saved.sku || saved.barcode,
+            sku: productInventorySku(saved),
             previousQty: 0,
             quantityChange: nextQty,
             newQty: nextQty,
@@ -481,10 +513,14 @@ export function ProductForm({
           });
         }
         keptIds.add(saved.id);
-      });
+      }
       // remove siblings the user deleted from the form
       existingIds.filter((id) => !keptIds.has(id)).forEach((id) => productsStore.remove(id));
-      toast.success("Product saved");
+      if (cloudStockFailures > 0) {
+        toast.warning("Product saved locally. Some stock changes are queued because cloud inventory update failed.");
+      } else {
+        toast.success("Product saved");
+      }
       onBack();
     } catch (e) {
       console.error("Failed to save product", e);

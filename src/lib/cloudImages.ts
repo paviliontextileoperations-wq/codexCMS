@@ -29,9 +29,9 @@ export async function uploadImageToCloud(
     code: ticket.asset.imageCode,
     fileName: ticket.asset.fileName,
     dataUrl: ticket.asset.url,
-    sku: ticket.asset.skuCode,
+    sku: ticket.asset.skuCode ?? undefined,
     modelCode: ticket.asset.modelCode,
-    productId: ticket.asset.skuId ?? ticket.asset.productId ?? undefined,
+    productId: ticket.asset.skuId ?? undefined,
     directory: ticket.asset.directoryKey,
     imageRole: imageRoleFromCode(ticket.asset.imageCode),
   };

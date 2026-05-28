@@ -22,6 +22,7 @@ import { ProductMaintenanceView } from "./ProductMaintenanceView";
 import { useMaintenance } from "@/lib/maintenanceStore";
 import { inventoryStore } from "@/lib/inventoryStore";
 import { cn } from "@/lib/utils";
+import { adjustProductInventoryInCloud, productInventorySku } from "@/lib/cloudInventory";
 
 type ProductStatus = "complete" | "missing_picture" | "incomplete" | "temporary" | "pending_approval";
 const SKU_SIZE_CODES = ["XXL", "XXS", "XL", "XS", "L", "M", "S", "U"] as const;
@@ -113,27 +114,54 @@ export function ProductsView() {
     setVisibleCount(PRODUCT_RENDER_BATCH);
   }, [q]);
 
-  function commitProductStock(product: Product, raw: string) {
+  async function commitProductStock(product: Product, raw: string) {
     const nextQty = Math.max(0, Math.floor(Number(raw)));
     if (!Number.isFinite(nextQty)) {
       toast.error("Quantity must be a valid number");
       return;
     }
     if (nextQty === product.stock) return;
-    const stock = productsStore.adjustStock(product.id, nextQty - product.stock);
-    if (!stock) {
-      toast.error("Could not update stock");
-      return;
+
+    const movementId = `product-stock-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    let previousQty = product.stock;
+    let quantityChange = nextQty - product.stock;
+    let remoteCreatedAt: number | undefined;
+    try {
+      const remote = await adjustProductInventoryInCloud({
+        id: movementId,
+        product,
+        movementType: "stocktake",
+        previousQty: product.stock,
+        newQty: nextQty,
+        reason: "stocktake_correction",
+        warehouse: "Main Warehouse",
+        location: "A-01-01",
+        notes: "Product quantity edited from product list",
+        actor: "desktop",
+      });
+      if (remote?.ok) {
+        previousQty = remote.previousQty ?? previousQty;
+        quantityChange = remote.quantityChange ?? quantityChange;
+        remoteCreatedAt = remote.movement?.createdAt;
+      }
+    } catch (error) {
+      console.warn("Cloud stock update failed; keeping local fallback.", error);
+      toast.warning("Cloud stock update failed. Saved locally and queued for sync.");
     }
+    productsStore.upsert({ ...product, stock: nextQty });
     inventoryStore.log({
+      id: movementId,
       productId: product.id,
-      sku: product.sku || product.barcode,
-      movementType: "adjustment",
+      sku: productInventorySku(product),
+      movementType: "stocktake",
       reason: "stocktake_correction",
-      previousQty: stock.previousQty,
-      quantityChange: stock.nextQty - stock.previousQty,
-      newQty: stock.nextQty,
+      previousQty,
+      quantityChange,
+      newQty: nextQty,
       notes: "Product quantity edited from product list",
+      warehouse: "Main Warehouse",
+      location: "A-01-01",
+      createdAt: remoteCreatedAt,
     });
     toast.success("Stock quantity updated");
   }
@@ -639,7 +667,7 @@ function StockInput({
   onCommit,
 }: {
   product: Product;
-  onCommit: (product: Product, raw: string) => void;
+  onCommit: (product: Product, raw: string) => void | Promise<void>;
 }) {
   const [value, setValue] = useState(String(product.stock));
   const low = product.stock <= product.lowStockThreshold;
@@ -660,7 +688,7 @@ function StockInput({
           onClick={(event) => event.stopPropagation()}
           onDoubleClick={(event) => event.stopPropagation()}
           onChange={(event) => setValue(event.target.value)}
-          onBlur={() => onCommit(product, value)}
+          onBlur={() => void onCommit(product, value)}
           onKeyDown={(event) => {
             if (event.key === "Enter") {
               event.currentTarget.blur();

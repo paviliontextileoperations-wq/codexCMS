@@ -230,6 +230,10 @@ function toNumber(value, fallback = 0) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function normalizeLookupCode(value) {
+  return String(value || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+}
+
 function asJson(value, fallback) {
   if (value === null || value === undefined) return fallback;
   if (typeof value === "object") return value;
@@ -966,6 +970,7 @@ async function adjustInventory(payload = {}) {
   ]);
   const movementType = allowedTypes.has(payload.movementType) ? payload.movementType : "adjustment";
   const skuText = String(payload.sku || payload.productId || "").trim();
+  const skuLookup = normalizeLookupCode(skuText);
   const productUuid = uuidOrNull(payload.productId);
   const client = createDatabaseClient();
   await client.connect();
@@ -974,14 +979,24 @@ async function adjustInventory(payload = {}) {
     await client.query("BEGIN");
     const skuResult = await client.query(
       `
-        SELECT id, sku_code, stock_qty, low_stock_threshold
-        FROM cms.skus
-        WHERE ($1::uuid IS NOT NULL AND id = $1::uuid)
-           OR sku_code = $2
-           OR legacy_id = $3
+        SELECT s.id, s.sku_code, s.stock_qty, s.low_stock_threshold
+        FROM cms.skus s
+        WHERE ($1::uuid IS NOT NULL AND s.id = $1::uuid)
+           OR s.sku_code = $2
+           OR s.other_sku = $2
+           OR s.barcode = $2
+           OR s.legacy_id = $3
+           OR (
+             $4 <> ''
+             AND (
+               regexp_replace(upper(s.sku_code), '[^A-Z0-9]', '', 'g') = $4
+               OR regexp_replace(upper(COALESCE(s.other_sku, '')), '[^A-Z0-9]', '', 'g') = $4
+               OR regexp_replace(upper(COALESCE(s.barcode, '')), '[^A-Z0-9]', '', 'g') = $4
+             )
+           )
         LIMIT 1
       `,
-      [productUuid, skuText, String(payload.productId || "")],
+      [productUuid, skuText, String(payload.productId || ""), skuLookup],
     );
     const sku = skuResult.rows[0];
     if (!sku) {
@@ -1187,7 +1202,8 @@ async function findCustomerId(client, sale) {
 
 async function findSkuForLine(client, line) {
   const skuUuid = uuidOrNull(line.productId);
-  const skuText = String(line.barcode || "").trim();
+  const skuText = String(line.barcode || line.sku || line.otherSku || "").trim();
+  const skuLookup = normalizeLookupCode(skuText);
   const result = await client.query(
     `
       SELECT s.id, s.product_id, s.sku_code
@@ -1196,9 +1212,18 @@ async function findSkuForLine(client, line) {
          OR s.legacy_id = $2
          OR s.sku_code = $3
          OR s.barcode = $3
+         OR s.other_sku = $3
+         OR (
+           $4 <> ''
+           AND (
+             regexp_replace(upper(s.sku_code), '[^A-Z0-9]', '', 'g') = $4
+             OR regexp_replace(upper(COALESCE(s.other_sku, '')), '[^A-Z0-9]', '', 'g') = $4
+             OR regexp_replace(upper(COALESCE(s.barcode, '')), '[^A-Z0-9]', '', 'g') = $4
+           )
+         )
       LIMIT 1
     `,
-    [skuUuid, String(line.productId || ""), skuText],
+    [skuUuid, String(line.productId || ""), skuText, skuLookup],
   );
   return result.rows[0] || null;
 }

@@ -22,6 +22,7 @@ import { fmtDate, fmtMoney } from "@/lib/format";
 import { useInventoryLocations, useInventoryMovements, useProducts } from "@/hooks/useStore";
 import type { InventoryMovement, InventoryMovementType, InventoryReasonCategory, Product } from "@/types";
 import { toast } from "sonner";
+import { adjustProductInventoryInCloud, productInventorySku } from "@/lib/cloudInventory";
 
 type StockFilter = "all" | "low" | "out" | "available";
 type Operation = Extract<
@@ -224,10 +225,9 @@ export function InventoryView() {
 
     setIsUpdating(true);
     try {
-      const remote = await window.desktopApp?.adjustInventory?.({
+      const remote = await adjustProductInventoryInCloud({
         id: movementId,
-        productId: selected.id,
-        sku: selected.sku,
+        product: selected,
         movementType: operation,
         previousQty: selected.stock,
         quantityChange: result.delta,
@@ -257,7 +257,7 @@ export function InventoryView() {
     inventoryStore.log({
       id: movementId,
       productId: selected.id,
-      sku: selected.sku,
+      sku: productInventorySku(selected),
       movementType: operation,
       previousQty,
       quantityChange,

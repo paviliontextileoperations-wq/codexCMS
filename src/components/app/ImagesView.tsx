@@ -13,7 +13,6 @@ import { EmptyState } from "./EmptyState";
 import { toast } from "sonner";
 import {
   enrichGalleryImage,
-  FILENAME_RE,
   galleryStore,
   parseFileName,
   type GalleryImage,
@@ -69,12 +68,18 @@ function fallbackDirectory(item: GalleryImage) {
   return item.directory ?? `women/uncategorized/general/${item.prefix}/${item.prefix}`;
 }
 
+function isImageFile(file: File) {
+  return file.type.startsWith("image/") || /\.(jpe?g|png|webp|gif|avif|heic)$/i.test(file.name);
+}
+
 function syncProductMainImages(items: Omit<GalleryImage, "id" | "createdAt">[]) {
   const products = productsStore.all();
   let changed = false;
   const next = products.map((product) => {
     const match = items.find((item) => {
-      const isSameProduct = item.productId === product.id || item.sku === product.sku || item.modelCode === product.barcode;
+      const isSameProduct =
+        item.productId === product.id ||
+        (Boolean(item.sku) && [product.sku, product.otherSku].filter(Boolean).includes(item.sku));
       return isSameProduct && Boolean(item.dataUrl);
     });
     if (!match) return product;
@@ -114,7 +119,7 @@ export function ImagesView() {
     };
   }, []);
 
-  async function prepareGalleryImage(file: File, parsed: { prefix: string; code: string }) {
+  async function prepareGalleryImage(file: File, parsed: { prefix: string; code: string; fileName?: string }) {
     const cloudImage = await uploadImageToCloud(file);
     if (cloudImage) return cloudImage;
     const dataUrl = await compressImage(file);
@@ -131,7 +136,7 @@ export function ImagesView() {
 
     for (const file of files) {
       const parsed = parseFileName(file.name);
-      if (!parsed.ok) {
+      if (!isImageFile(file) || !parsed.ok) {
         rejected.push(file.name);
         continue;
       }
@@ -160,12 +165,12 @@ export function ImagesView() {
     if (accepted.length > 0 && rejected.length === 0) {
       toast.success(`Uploaded ${accepted.length} picture${accepted.length === 1 ? "" : "s"}`);
     } else if (accepted.length > 0 && rejected.length > 0) {
-      toast.warning(`Uploaded ${accepted.length}, rejected ${rejected.length} (wrong name format)`, {
+      toast.warning(`Uploaded ${accepted.length}, rejected ${rejected.length} non-image file${rejected.length === 1 ? "" : "s"}`, {
         description: rejected.slice(0, 5).join(", ") + (rejected.length > 5 ? "..." : ""),
       });
     } else {
-      toast.error(`Rejected ${rejected.length} file${rejected.length === 1 ? "" : "s"} - wrong name format`, {
-        description: "Expected PREFIX_CODE.JPG or SKU-CODE.JPG (e.g. P001BLK_F.JPG, P001BLK-D1.JPG)",
+      toast.error(`Rejected ${rejected.length} file${rejected.length === 1 ? "" : "s"}`, {
+        description: "Only image files can be uploaded.",
       });
     }
   }
@@ -182,10 +187,8 @@ export function ImagesView() {
     setReplaceTargetId(null);
     if (!file || !id) return;
 
-    if (!FILENAME_RE.test(file.name)) {
-      toast.error("Wrong filename format", {
-        description: "Expected PREFIX_CODE.JPG or SKU-CODE.JPG (e.g. P001BLK_F.JPG)",
-      });
+    if (!isImageFile(file)) {
+      toast.error("Only image files can be uploaded");
       return;
     }
     const parsed = parseFileName(file.name);
@@ -268,7 +271,7 @@ export function ImagesView() {
       <input
         ref={bulkInputRef}
         type="file"
-        accept="image/jpeg,.JPG"
+        accept="image/*"
         multiple
         className="hidden"
         onChange={handleBulkPick}
@@ -276,7 +279,7 @@ export function ImagesView() {
       <input
         ref={replaceInputRef}
         type="file"
-        accept="image/jpeg,.JPG"
+        accept="image/*"
         className="hidden"
         onChange={handleReplacePick}
       />
@@ -285,10 +288,10 @@ export function ImagesView() {
         <div className="text-xs text-muted-foreground">
           <div className="mb-1 font-display text-sm text-foreground">Bulk upload</div>
           <div>
-            Filename must be uppercase JPG: <span className="font-mono-tabular">PREFIX_CODE.JPG</span>
-            {" "}or <span className="font-mono-tabular">SKU-CODE.JPG</span>
+            Any image can be uploaded. Exact SKU names like <span className="font-mono-tabular">P001BLK.JPG</span>
+            {" "}bind to products; strict names like <span className="font-mono-tabular">P001BLK-F.JPG</span> add roles.
           </div>
-          <div>Codes: F front, B back, D1/D2 detail, MF/MB/MX model, S1/S2 SHEIN.</div>
+          <div>Unmatched files stay in the cloud as unbound pictures until a product SKU is available.</div>
         </div>
         <div className="font-mono-tabular text-[10px] uppercase tracking-[0.2em] text-muted-foreground">
           AWS key preview: women/category/fine-category/model/sku/file.jpg
@@ -360,7 +363,7 @@ export function ImagesView() {
       {filtered.length === 0 ? (
         <EmptyState
           title={gallery.length === 0 ? "No pictures yet" : "No matching pictures"}
-          description="Upload JPG files named like P001BLK_F.JPG or P001BLK-F.JPG to populate the catalog."
+          description="Upload images named like an existing SKU to bind them, or upload loose images for later matching."
         />
       ) : (
         <div className="overflow-x-auto border-2 border-foreground">
