@@ -15,6 +15,7 @@ import type { Address } from "@/types";
 import { useSession } from "@/lib/auth";
 import { approvalsStore, usePendingDeletes } from "@/lib/approvals";
 import { cn } from "@/lib/utils";
+import { pushCustomersToCloud } from "@/lib/cloudCustomers";
 
 const CUSTOMER_RENDER_BATCH = 90;
 
@@ -102,11 +103,17 @@ export function CustomersView() {
   function openNew() { setDraft(emptyCustomer); setOpen(true); }
   function openEdit(c: Customer) { setDraft(customerToDraft(c)); setOpen(true); }
 
-  function save() {
+  async function save() {
     if (!draft.name) { toast.error("Name is required"); return; }
     if (!draft.phoneNumber) { toast.error("Contact phone number is required"); return; }
     customersStore.upsert(composeCustomer(draft));
-    toast.success(draft.id ? "Customer updated" : "Customer added");
+    try {
+      await pushCustomersToCloud();
+      toast.success(draft.id ? "Customer updated and saved to cloud" : "Customer added and saved to cloud");
+    } catch (error) {
+      console.warn("Customer saved locally but cloud push failed", error);
+      toast.warning("Customer saved locally. Cloud sync is pending.");
+    }
     setOpen(false);
   }
 

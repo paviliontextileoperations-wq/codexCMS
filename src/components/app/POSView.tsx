@@ -30,6 +30,7 @@ import { normalizeProductCode } from "@/lib/productCodes";
 import { generateShippingLabelPdf } from "@/lib/shippingLabelPdf";
 import { deliverySourceSuffix, getCustomerDeliveryAddress } from "@/lib/customerAddress";
 import { maintenanceStore, useMaintenance } from "@/lib/maintenanceStore";
+import { pushCustomersToCloud } from "@/lib/cloudCustomers";
 import {
   allocateDocumentSerial,
   cloudSalesAvailable,
@@ -362,10 +363,16 @@ export function POSView() {
   const itemCount = lines.reduce((a, l) => a + l.quantity, 0);
   const total = subtotal + tax + transportCost;
 
-  function createNewCustomer() {
+  async function createNewCustomer() {
     if (!newCustomer.name) { toast.error("Name is required"); return; }
     if (!newCustomer.phoneNumber) { toast.error("Contact phone number is required"); return; }
     const c = customersStore.upsert(composeCustomer(newCustomer));
+    try {
+      await pushCustomersToCloud();
+    } catch (error) {
+      console.warn("Customer created locally but cloud push failed", error);
+      toast.warning("Customer created locally. Cloud sync is pending.");
+    }
     setCustomer(c);
     setCustomerQuery("");
     setNewCustomer(emptyCustomer);

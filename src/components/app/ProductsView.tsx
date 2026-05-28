@@ -20,9 +20,7 @@ import { getB2cUnitPrice, getDefaultB2cMarkupPercent } from "@/lib/productSettin
 import { normalizeProductCode } from "@/lib/productCodes";
 import { ProductMaintenanceView } from "./ProductMaintenanceView";
 import { useMaintenance } from "@/lib/maintenanceStore";
-import { inventoryStore } from "@/lib/inventoryStore";
 import { cn } from "@/lib/utils";
-import { adjustProductInventoryInCloud, productInventorySku } from "@/lib/cloudInventory";
 
 type ProductStatus = "complete" | "missing_picture" | "incomplete" | "temporary" | "pending_approval";
 const SKU_SIZE_CODES = ["XXL", "XXS", "XL", "XS", "L", "M", "S", "U"] as const;
@@ -113,58 +111,6 @@ export function ProductsView() {
   useEffect(() => {
     setVisibleCount(PRODUCT_RENDER_BATCH);
   }, [q]);
-
-  async function commitProductStock(product: Product, raw: string) {
-    const nextQty = Math.max(0, Math.floor(Number(raw)));
-    if (!Number.isFinite(nextQty)) {
-      toast.error("Quantity must be a valid number");
-      return;
-    }
-    if (nextQty === product.stock) return;
-
-    const movementId = `product-stock-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    let previousQty = product.stock;
-    let quantityChange = nextQty - product.stock;
-    let remoteCreatedAt: number | undefined;
-    try {
-      const remote = await adjustProductInventoryInCloud({
-        id: movementId,
-        product,
-        movementType: "stocktake",
-        previousQty: product.stock,
-        newQty: nextQty,
-        reason: "stocktake_correction",
-        warehouse: "Main Warehouse",
-        location: "A-01-01",
-        notes: "Product quantity edited from product list",
-        actor: "desktop",
-      });
-      if (remote?.ok) {
-        previousQty = remote.previousQty ?? previousQty;
-        quantityChange = remote.quantityChange ?? quantityChange;
-        remoteCreatedAt = remote.movement?.createdAt;
-      }
-    } catch (error) {
-      console.warn("Cloud stock update failed; keeping local fallback.", error);
-      toast.warning("Cloud stock update failed. Saved locally and queued for sync.");
-    }
-    productsStore.upsert({ ...product, stock: nextQty });
-    inventoryStore.log({
-      id: movementId,
-      productId: product.id,
-      sku: productInventorySku(product),
-      movementType: "stocktake",
-      reason: "stocktake_correction",
-      previousQty,
-      quantityChange,
-      newQty: nextQty,
-      notes: "Product quantity edited from product list",
-      warehouse: "Main Warehouse",
-      location: "A-01-01",
-      createdAt: remoteCreatedAt,
-    });
-    toast.success("Stock quantity updated");
-  }
 
   function openNew() { setChooserOpen(true); }
 
@@ -579,7 +525,7 @@ export function ProductsView() {
                     {fmtMoney(getB2cUnitPrice(p.price, p.b2cMarkup, p.b2cPrice))}
                   </td>
                   <td className="px-4 py-3 text-right font-mono-tabular">
-                    <StockInput product={p} onCommit={commitProductStock} />
+                    <StockDisplay product={p} />
                   </td>
                   <td className="px-4 py-3 text-right">
                     <div className="flex justify-end gap-1 pointer-events-auto">
@@ -662,43 +608,20 @@ export function ProductsView() {
   );
 }
 
-function StockInput({
-  product,
-  onCommit,
-}: {
-  product: Product;
-  onCommit: (product: Product, raw: string) => void | Promise<void>;
-}) {
-  const [value, setValue] = useState(String(product.stock));
+function StockDisplay({ product }: { product: Product }) {
   const low = product.stock <= product.lowStockThreshold;
-
-  useEffect(() => {
-    setValue(String(product.stock));
-  }, [product.stock]);
 
   return (
     <div className="flex justify-end">
-      <div className={cn("flex items-center gap-1", low && "text-bauhaus-red")}>
+      <div
+        className={cn(
+          "inline-flex h-9 min-w-20 items-center justify-end gap-1 px-2",
+          low && "text-bauhaus-red",
+        )}
+        title="Stock quantity is read-only here. Edit stock in Inventory."
+      >
         {low && <span className="h-2 w-2 shrink-0 bg-bauhaus-red" />}
-        <input
-          value={value}
-          type="number"
-          min={0}
-          step={1}
-          onClick={(event) => event.stopPropagation()}
-          onDoubleClick={(event) => event.stopPropagation()}
-          onChange={(event) => setValue(event.target.value)}
-          onBlur={() => void onCommit(product, value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") {
-              event.currentTarget.blur();
-            }
-          }}
-          className={cn(
-            "h-9 w-20 border border-foreground/30 bg-transparent px-2 text-right font-mono-tabular outline-none focus:border-foreground",
-            low && "border-bauhaus-red",
-          )}
-        />
+        <span>{product.stock}</span>
       </div>
     </div>
   );
