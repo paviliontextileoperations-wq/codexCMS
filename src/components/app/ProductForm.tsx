@@ -20,6 +20,7 @@ import { CATEGORY_NAMES, getFineCategories, getMeasurementLabels } from "@/lib/c
 import { FINE_CATEGORY_WEIGHT_KG, FALLBACK_WEIGHT_KG } from "@/lib/productWeight";
 import { findDuplicateProductCode, normalizeProductCode } from "@/lib/productCodes";
 import { getDefaultB2cMarkupPercent } from "@/lib/productSettings";
+import { inventoryStore } from "@/lib/inventoryStore";
 
 const SIZES = ["XXS", "XS", "S", "M", "L", "XL", "XXL", "U"] as const;
 
@@ -422,6 +423,8 @@ export function ProductForm({
         const colourCode = (v.colourCode || v.colour.slice(0, 3).toUpperCase()).trim();
         const sizeCode = (v.sizeCode || v.size).trim();
         const meas = sizeMeasurements[sizeCode] || sizeMeasurements[v.sizeCode] || {};
+        const nextQty = Math.max(0, parseInt(v.quantity) || 0);
+        const previousQty = existing?.stock ?? 0;
         const saved = productsStore.upsert({
           ...(existing ? { id: existing.id } : {}),
           barcode: modelCode,
@@ -439,7 +442,7 @@ export function ProductForm({
           b2cMarkup: markupPct / 100,
           b2cPrice: isNaN(b2cPriceNum) ? undefined : b2cPriceNum,
           composition: compositionPayload,
-          stock: parseInt(v.quantity) || 0,
+          stock: nextQty,
           lowStockThreshold: 5,
           otherSku: normalizeProductCode(v.otherSku) || undefined,
           weight: meas.weight ?? "",
@@ -454,6 +457,29 @@ export function ProductForm({
           mainImage: mainImage || undefined,
           image: (colourImages[v.colourCode]?.[0]) || (colourImages[colourCode]?.[0]) || variationImages[v.id] || undefined,
         });
+        if (existing && previousQty !== nextQty) {
+          inventoryStore.log({
+            movementType: "adjustment",
+            productId: saved.id,
+            sku: saved.sku || saved.barcode,
+            previousQty,
+            quantityChange: nextQty - previousQty,
+            newQty: nextQty,
+            reason: "stocktake_correction",
+            notes: "Product quantity edited from product form",
+          });
+        } else if (!existing && nextQty > 0) {
+          inventoryStore.log({
+            movementType: "initial_import",
+            productId: saved.id,
+            sku: saved.sku || saved.barcode,
+            previousQty: 0,
+            quantityChange: nextQty,
+            newQty: nextQty,
+            reason: "purchase_inbound",
+            notes: "Initial product quantity",
+          });
+        }
         keptIds.add(saved.id);
       });
       // remove siblings the user deleted from the form

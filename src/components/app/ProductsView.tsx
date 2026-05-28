@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Check, Plus, Search, Trash2, Upload, Download, Wrench } from "lucide-react";
 import * as XLSX from "xlsx";
 import { Button } from "@/components/ui/button";
@@ -20,9 +20,12 @@ import { getB2cUnitPrice, getDefaultB2cMarkupPercent } from "@/lib/productSettin
 import { normalizeProductCode } from "@/lib/productCodes";
 import { ProductMaintenanceView } from "./ProductMaintenanceView";
 import { useMaintenance } from "@/lib/maintenanceStore";
+import { inventoryStore } from "@/lib/inventoryStore";
+import { cn } from "@/lib/utils";
 
 type ProductStatus = "complete" | "missing_picture" | "incomplete" | "temporary" | "pending_approval";
 const SKU_SIZE_CODES = ["XXL", "XXS", "XL", "XS", "L", "M", "S", "U"] as const;
+const PRODUCT_RENDER_BATCH = 160;
 
 function getProductStatus(p: Product): ProductStatus {
   if (p.maintenanceStatus === "pending_approval") return "pending_approval";
@@ -95,6 +98,7 @@ export function ProductsView() {
   const maintenanceItems = useMaintenance();
   const openMaintenanceCount = maintenanceItems.filter((item) => !item.resolved).length;
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [visibleCount, setVisibleCount] = useState(PRODUCT_RENDER_BATCH);
 
   const filtered = useMemo(() => {
     const t = q.trim().toLowerCase();
@@ -103,6 +107,36 @@ export function ProductsView() {
       [p.name, p.barcode, p.sku, p.otherSku, p.category, p.color, p.size].filter(Boolean).join(" ").toLowerCase().includes(t),
     );
   }, [products, q]);
+  const visibleProducts = useMemo(() => filtered.slice(0, visibleCount), [filtered, visibleCount]);
+
+  useEffect(() => {
+    setVisibleCount(PRODUCT_RENDER_BATCH);
+  }, [q]);
+
+  function commitProductStock(product: Product, raw: string) {
+    const nextQty = Math.max(0, Math.floor(Number(raw)));
+    if (!Number.isFinite(nextQty)) {
+      toast.error("Quantity must be a valid number");
+      return;
+    }
+    if (nextQty === product.stock) return;
+    const stock = productsStore.adjustStock(product.id, nextQty - product.stock);
+    if (!stock) {
+      toast.error("Could not update stock");
+      return;
+    }
+    inventoryStore.log({
+      productId: product.id,
+      sku: product.sku || product.barcode,
+      movementType: "adjustment",
+      reason: "stocktake_correction",
+      previousQty: stock.previousQty,
+      quantityChange: stock.nextQty - stock.previousQty,
+      newQty: stock.nextQty,
+      notes: "Product quantity edited from product list",
+    });
+    toast.success("Stock quantity updated");
+  }
 
   function openNew() { setChooserOpen(true); }
 
@@ -487,7 +521,7 @@ export function ProductsView() {
               </tr>
             </thead>
             <tbody>
-              {filtered.map((p) => {
+              {visibleProducts.map((p) => {
                 const isPending = pendingDeletes.products.has(p.id);
                 const status = getProductStatus(p);
                 const meta = STATUS_META[status];
@@ -517,10 +551,7 @@ export function ProductsView() {
                     {fmtMoney(getB2cUnitPrice(p.price, p.b2cMarkup, p.b2cPrice))}
                   </td>
                   <td className="px-4 py-3 text-right font-mono-tabular">
-                    <span className={p.stock <= p.lowStockThreshold ? "inline-flex items-center gap-1 text-bauhaus-red" : ""}>
-                      {p.stock <= p.lowStockThreshold && <span className="h-2 w-2 bg-bauhaus-red" />}
-                      {p.stock}
-                    </span>
+                    <StockInput product={p} onCommit={commitProductStock} />
                   </td>
                   <td className="px-4 py-3 text-right">
                     <div className="flex justify-end gap-1 pointer-events-auto">
@@ -556,6 +587,21 @@ export function ProductsView() {
               })}
             </tbody>
           </table>
+          {visibleProducts.length < filtered.length && (
+            <div className="sticky bottom-0 flex items-center justify-between border-t-2 border-foreground bg-background px-4 py-3 text-xs text-muted-foreground">
+              <span>
+                Showing {visibleProducts.length} of {filtered.length}. Search to narrow results, or load more.
+              </span>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setVisibleCount((count) => count + PRODUCT_RENDER_BATCH)}
+              >
+                Load more
+              </Button>
+            </div>
+          )}
           </div>
         </div>
       )}
@@ -585,6 +631,48 @@ export function ProductsView() {
         </DialogContent>
       </Dialog>
     </>
+  );
+}
+
+function StockInput({
+  product,
+  onCommit,
+}: {
+  product: Product;
+  onCommit: (product: Product, raw: string) => void;
+}) {
+  const [value, setValue] = useState(String(product.stock));
+  const low = product.stock <= product.lowStockThreshold;
+
+  useEffect(() => {
+    setValue(String(product.stock));
+  }, [product.stock]);
+
+  return (
+    <div className="flex justify-end">
+      <div className={cn("flex items-center gap-1", low && "text-bauhaus-red")}>
+        {low && <span className="h-2 w-2 shrink-0 bg-bauhaus-red" />}
+        <input
+          value={value}
+          type="number"
+          min={0}
+          step={1}
+          onClick={(event) => event.stopPropagation()}
+          onDoubleClick={(event) => event.stopPropagation()}
+          onChange={(event) => setValue(event.target.value)}
+          onBlur={() => onCommit(product, value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.currentTarget.blur();
+            }
+          }}
+          className={cn(
+            "h-9 w-20 border border-foreground/30 bg-transparent px-2 text-right font-mono-tabular outline-none focus:border-foreground",
+            low && "border-bauhaus-red",
+          )}
+        />
+      </div>
+    </div>
   );
 }
 

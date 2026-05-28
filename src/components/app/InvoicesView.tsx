@@ -170,13 +170,13 @@ function InvoicePreview({ item }: { item: DecoratedInvoice }) {
     : [[`Tax ${((sale.taxRate ?? 0) * 100).toFixed(2).replace(/\.?0+$/, "")}%`, sale.tax]];
 
   return (
-    <div className="border-2 border-foreground bg-background p-6">
-      <div className="mb-8 flex items-start justify-between gap-6 border-b-2 border-foreground pb-5">
+    <div className="min-w-0 overflow-hidden border-2 border-foreground bg-background p-5">
+      <div className="mb-8 flex flex-col gap-5 border-b-2 border-foreground pb-5 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <div className="font-display text-2xl">PAVILION TEXTILE GROUP</div>
           <div className="mt-2 text-xs uppercase tracking-[0.2em] text-muted-foreground">Madrid - Spain</div>
         </div>
-        <div className="text-right">
+        <div className="sm:text-right">
           <div className="font-display text-3xl uppercase">{INVOICE_TYPE_LABEL[item.invoiceType]}</div>
           <div className="mt-2 font-mono-tabular text-sm">{sale.invoiceNumber}</div>
           <div className="text-xs text-muted-foreground">{fmtDateOnly(sale.createdAt)}</div>
@@ -209,15 +209,15 @@ function InvoicePreview({ item }: { item: DecoratedInvoice }) {
         </div>
       </div>
 
-      <div className="overflow-x-auto">
-        <table className="w-full min-w-[640px] text-sm">
+      <div className="min-w-0 overflow-hidden">
+        <table className="w-full table-fixed text-sm">
           <thead className="border-b-2 border-foreground">
             <tr className="text-left">
-              <th className="py-2 font-display text-xs uppercase">SKU</th>
-              <th className="py-2 font-display text-xs uppercase">Item</th>
-              <th className="py-2 text-right font-display text-xs uppercase">Qty</th>
-              <th className="py-2 text-right font-display text-xs uppercase">Unit</th>
-              <th className="py-2 text-right font-display text-xs uppercase">Total</th>
+              <th className="w-[18%] py-2 pr-2 font-display text-xs uppercase">SKU</th>
+              <th className="w-[38%] py-2 pr-2 font-display text-xs uppercase">Item</th>
+              <th className="w-[10%] py-2 text-right font-display text-xs uppercase">Qty</th>
+              <th className="w-[16%] py-2 text-right font-display text-xs uppercase">Unit</th>
+              <th className="w-[18%] py-2 text-right font-display text-xs uppercase">Total</th>
             </tr>
           </thead>
           <tbody>
@@ -225,9 +225,9 @@ function InvoicePreview({ item }: { item: DecoratedInvoice }) {
               const lineTotal = line.unitPrice * line.quantity * (1 - (line.discountPct ?? 0) / 100);
               return (
                 <tr key={`${line.productId}-${line.barcode}`} className="border-b border-foreground/20">
-                  <td className="py-2 font-mono-tabular text-xs">{line.barcode}</td>
-                  <td className="py-2">
-                    <div>{line.name}</div>
+                  <td className="break-words py-2 pr-2 font-mono-tabular text-xs">{line.barcode}</td>
+                  <td className="py-2 pr-2">
+                    <div className="break-words">{line.name}</div>
                     <div className="text-xs text-muted-foreground">{[line.color, line.size].filter(Boolean).join(" / ")}</div>
                   </td>
                   <td className="py-2 text-right font-mono-tabular">{line.quantity}</td>
@@ -576,12 +576,12 @@ export function InvoicesView() {
       )}
 
       <Dialog open={!!selected} onOpenChange={(open) => !open && setSelected(null)}>
-        <DialogContent className="max-h-[92vh] max-w-6xl overflow-y-auto">
-          <DialogHeader>
+        <DialogContent className="max-h-[92vh] w-[calc(100vw-2rem)] max-w-[1280px] overflow-hidden rounded-none border-2 border-foreground p-0">
+          <DialogHeader className="border-b-2 border-foreground px-5 py-4">
             <DialogTitle className="flex flex-wrap items-center justify-between gap-3">
               <span>{selected?.sale.invoiceNumber}</span>
               {selected && (
-                <div className="flex gap-2">
+                <div className="flex flex-wrap gap-2">
                   <Button variant="outline" onClick={() => downloadInvoice(selected)}>
                     <Download /> Download PDF
                   </Button>
@@ -599,9 +599,12 @@ export function InvoicesView() {
           </DialogHeader>
 
           {selected && form && (
-            <div className="grid gap-4 lg:grid-cols-[1fr_360px]">
-              <InvoicePreview item={selected} />
-              <div className="space-y-4">
+            <div className="max-h-[calc(92vh-86px)] overflow-y-auto p-5">
+            <div className="grid min-w-0 gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
+              <div className="min-w-0">
+                <InvoicePreview item={selected} />
+              </div>
+              <div className="min-w-0 space-y-4">
                 {editing && canEditInvoices ? (
                   <div className="border-2 border-foreground p-4">
                     <div className="mb-4 font-display text-lg">Edit invoice</div>
@@ -726,6 +729,7 @@ export function InvoicesView() {
                   </div>
                 )}
               </div>
+            </div>
             </div>
           )}
         </DialogContent>

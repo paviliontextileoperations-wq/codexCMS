@@ -140,12 +140,12 @@ export function POSView() {
     }
   }, [customer, lines, priceMode, customerQuery, transportMethod]);
 
-  // keep scanner input focused when ready
+  // Keep scanner input ready; checkout still requires a customer.
   useEffect(() => {
-    if (customer && !paymentOpen && !showNewCustomer) {
+    if (!paymentOpen && !showNewCustomer && !showSelectCustomer) {
       scanRef.current?.focus();
     }
-  }, [customer, paymentOpen, showNewCustomer, lines.length]);
+  }, [paymentOpen, showNewCustomer, showSelectCustomer, lines.length]);
 
   const customerMatches = useMemo(() => {
     if (!customerQuery.trim()) return [];
@@ -531,7 +531,7 @@ export function POSView() {
         <div className="grid min-h-0 flex-1 grid-cols-1 gap-px overflow-hidden bg-border lg:grid-cols-[72%_28%]">
           <section className="flex min-h-0 flex-col overflow-hidden bg-card">
             <header className="flex items-center justify-between border-b border-border px-8 py-6">
-              <Step n="02" title="Scan products" done={lines.length > 0} disabled={!customer} />
+              <Step n="02" title="Scan products" done={lines.length > 0} />
               <div className="flex items-center gap-2">
                 <Button
                   type="button"
@@ -554,7 +554,6 @@ export function POSView() {
                   size="sm"
                   className="rounded-none"
                   onClick={openTemporaryProduct}
-                  disabled={!customer}
                 >
                   <PackagePlus className="h-4 w-4" />
                   Temporal
@@ -564,12 +563,13 @@ export function POSView() {
 
             <form
               onSubmit={onScanSubmit}
-              className={cn("border-b border-border px-8 py-4", !customer && "pointer-events-none opacity-35")}
+              className="border-b border-border px-8 py-4"
             >
               <div className="flex items-center gap-3 border-2 border-foreground bg-background px-3">
                 <Barcode className="h-5 w-5 text-accent" />
                 <input
                   ref={scanRef}
+                  autoFocus
                   value={scan}
                   onChange={(e) => setScan(e.target.value)}
                   placeholder="Scan or type barcode then press Enter"
@@ -748,7 +748,6 @@ export function POSView() {
                   <div className="flex items-center gap-2 border-2 border-foreground bg-background px-3">
                     <Search className="h-4 w-4 text-muted-foreground" />
                     <input
-                      autoFocus
                       value={customerQuery}
                       onChange={(e) => setCustomerQuery(e.target.value)}
                       placeholder="ID, name, phone, VAT, email..."

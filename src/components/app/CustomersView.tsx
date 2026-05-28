@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Plus, Search, Trash2, Pencil, FileText } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -16,6 +16,8 @@ import { useSession } from "@/lib/auth";
 import { approvalsStore, usePendingDeletes } from "@/lib/approvals";
 import { cn } from "@/lib/utils";
 
+const CUSTOMER_RENDER_BATCH = 90;
+
 function formatAddress(a?: Address): string {
   if (!a) return "";
   const parts = [a.line1, a.line2, a.postalCode, a.provinceState, a.country].filter(Boolean);
@@ -31,6 +33,7 @@ export function CustomersView() {
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState<CustomerDraft>(emptyCustomer);
   const [detail, setDetail] = useState<Customer | null>(null);
+  const [visibleCount, setVisibleCount] = useState(CUSTOMER_RENDER_BATCH);
   const session = useSession();
   const pendingDeletes = usePendingDeletes();
 
@@ -78,6 +81,23 @@ export function CustomersView() {
         [c.id, c.name, c.phone, c.email, c.vatNumber].filter(Boolean).join(" ").toLowerCase().includes(t),
       );
   }, [customers, q, tab, b2bSub, docTypesByCustomer]);
+  const visibleCustomers = useMemo(() => filtered.slice(0, visibleCount), [filtered, visibleCount]);
+
+  const salesStatsByCustomer = useMemo(() => {
+    const map = new Map<string, { count: number; total: number; outstanding: number }>();
+    sales.forEach((sale) => {
+      const current = map.get(sale.customerId) ?? { count: 0, total: 0, outstanding: 0 };
+      current.count += 1;
+      current.total += sale.total;
+      current.outstanding += sale.amountDue ?? 0;
+      map.set(sale.customerId, current);
+    });
+    return map;
+  }, [sales]);
+
+  useEffect(() => {
+    setVisibleCount(CUSTOMER_RENDER_BATCH);
+  }, [q, tab, b2bSub]);
 
   function openNew() { setDraft(emptyCustomer); setOpen(true); }
   function openEdit(c: Customer) { setDraft(customerToDraft(c)); setOpen(true); }
@@ -176,10 +196,8 @@ export function CustomersView() {
       ) : (
         <div className="max-h-[calc(100vh-330px)] min-h-[520px] overflow-y-auto pr-2">
         <div className="grid grid-cols-1 gap-px bg-foreground/10 md:grid-cols-2 lg:grid-cols-3">
-          {filtered.map((c) => {
-            const cSales = sales.filter((s) => s.customerId === c.id);
-            const total = cSales.reduce((a, s) => a + s.total, 0);
-            const outstanding = cSales.reduce((a, s) => a + (s.amountDue ?? 0), 0);
+          {visibleCustomers.map((c) => {
+            const stats = salesStatsByCustomer.get(c.id) ?? { count: 0, total: 0, outstanding: 0 };
             return (
               <button
                 key={c.id}
@@ -212,19 +230,34 @@ export function CustomersView() {
                 <div className="text-sm text-muted-foreground">{c.phone}</div>
                 {c.vatNumber && <div className="text-xs text-muted-foreground">VAT · {c.vatNumber}</div>}
                 <div className="mt-2 flex items-center justify-between border-t border-foreground/10 pt-3 text-xs">
-                  <span className="text-muted-foreground">{cSales.length} sale{cSales.length === 1 ? "" : "s"}</span>
-                  <span className="font-mono-tabular font-semibold">{fmtMoney(total)}</span>
+                  <span className="text-muted-foreground">{stats.count} sale{stats.count === 1 ? "" : "s"}</span>
+                  <span className="font-mono-tabular font-semibold">{fmtMoney(stats.total)}</span>
                 </div>
-                {outstanding > 0 && (
+                {stats.outstanding > 0 && (
                   <div className="flex items-center justify-between text-xs">
                     <span className="text-bauhaus-red uppercase tracking-wider font-semibold">Pending</span>
-                    <span className="font-mono-tabular font-semibold text-bauhaus-red">{fmtMoney(outstanding)}</span>
+                    <span className="font-mono-tabular font-semibold text-bauhaus-red">{fmtMoney(stats.outstanding)}</span>
                   </div>
                 )}
               </button>
             );
           })}
         </div>
+        {visibleCustomers.length < filtered.length && (
+          <div className="sticky bottom-0 mt-px flex items-center justify-between border-2 border-foreground bg-background px-4 py-3 text-xs text-muted-foreground">
+            <span>
+              Showing {visibleCustomers.length} of {filtered.length}. Search to narrow results, or load more.
+            </span>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setVisibleCount((count) => count + CUSTOMER_RENDER_BATCH)}
+            >
+              Load more
+            </Button>
+          </div>
+        )}
         </div>
       )}
 
