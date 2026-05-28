@@ -627,8 +627,10 @@ async function upsertCustomer(client, customer, index) {
 
   const customerId = result.rows[0].id;
   await upsertCustomerPhone(client, customerId, customer);
-  await upsertCustomerAddress(client, customerId, "Fiscal", customer.fiscalAddress);
-  await upsertCustomerAddress(client, customerId, "Logistics", customer.logisticsAddress);
+  const hasExplicitLogisticsAddress = hasAddressContent(customer.logisticsAddress);
+  const logisticsAddress = hasExplicitLogisticsAddress ? customer.logisticsAddress : customer.fiscalAddress;
+  await upsertCustomerAddress(client, customerId, "Fiscal", customer.fiscalAddress, false);
+  await upsertCustomerAddress(client, customerId, "Logistics", logisticsAddress, !hasExplicitLogisticsAddress);
 
   return customerId;
 }
@@ -660,8 +662,17 @@ async function upsertCustomerPhone(client, customerId, customer) {
   );
 }
 
-async function upsertCustomerAddress(client, customerId, type, address) {
+function hasAddressContent(address) {
   if (!address) {
+    return false;
+  }
+  return ["line1", "line2", "additionalInfo", "postalCode", "provinceState", "country"].some((key) =>
+    Boolean(nullIfBlank(address[key])),
+  );
+}
+
+async function upsertCustomerAddress(client, customerId, type, address, sameAsOtherAddress = false) {
+  if (!hasAddressContent(address)) {
     return;
   }
 
@@ -671,7 +682,7 @@ async function upsertCustomerAddress(client, customerId, type, address) {
         legacy_id, address_code, customer_id, address_type, address_line_1,
         address_line_2, additional_info, postal_code, province_state, country,
         is_default, same_as_other_address
-      ) VALUES ($1, $1, $2, $3, $4, $5, $6, $7, $8, $9, true, false)
+      ) VALUES ($1, $1, $2, $3, $4, $5, $6, $7, $8, $9, true, $10)
       ON CONFLICT (address_code) DO UPDATE SET
         address_line_1 = EXCLUDED.address_line_1,
         address_line_2 = EXCLUDED.address_line_2,
@@ -679,6 +690,7 @@ async function upsertCustomerAddress(client, customerId, type, address) {
         postal_code = EXCLUDED.postal_code,
         province_state = EXCLUDED.province_state,
         country = EXCLUDED.country,
+        same_as_other_address = EXCLUDED.same_as_other_address,
         updated_at = now()
     `,
     [
@@ -691,6 +703,7 @@ async function upsertCustomerAddress(client, customerId, type, address) {
       requiredText(address.postalCode, "00000"),
       requiredText(address.provinceState, "Pending"),
       requiredText(address.country, "Spain"),
+      sameAsOtherAddress,
     ],
   );
 }

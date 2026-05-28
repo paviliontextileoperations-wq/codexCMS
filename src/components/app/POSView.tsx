@@ -28,6 +28,7 @@ import { getCartWeightKg } from "@/lib/productWeight";
 import { getB2cUnitPrice, getDefaultB2cMarkupPercent } from "@/lib/productSettings";
 import { normalizeProductCode } from "@/lib/productCodes";
 import { generateShippingLabelPdf } from "@/lib/shippingLabelPdf";
+import { deliverySourceSuffix, getCustomerDeliveryAddress } from "@/lib/customerAddress";
 import { maintenanceStore, useMaintenance } from "@/lib/maintenanceStore";
 import {
   allocateDocumentSerial,
@@ -310,9 +311,10 @@ export function POSView() {
     priceMode === "NOTE"
       ? { vat: 0, surcharge: 0, total: 0 }
       : getTaxBreakdown(customer, b2bTaxMode ? "B2B" : priceMode);
-  const logisticsCountry = (customer?.logisticsAddress?.country || "").trim();
-  const logisticsProvince = (customer?.logisticsAddress?.provinceState || "").trim();
-  const deliveryAvailable = !!logisticsCountry;
+  const deliveryAddress = getCustomerDeliveryAddress(customer);
+  const deliveryCountry = (deliveryAddress.address?.country || "").trim();
+  const deliveryProvince = (deliveryAddress.address?.provinceState || "").trim();
+  const deliveryAvailable = !!deliveryCountry;
 
   // Total order weight = Σ effective weight × qty + packaging.
   // Effective weight uses the manual product weight when present, otherwise
@@ -328,12 +330,12 @@ export function POSView() {
   const transportQuote: TransportQuote | null = useMemo(() => {
     if (!deliveryAvailable || !cartWeightKg.complete) return null;
     const qs = quoteTransport({
-      country: logisticsCountry,
-      province: logisticsProvince,
+      country: deliveryCountry,
+      province: deliveryProvince,
       weightKg: cartWeightKg.kg,
     });
     return qs[0] ?? null;
-  }, [deliveryAvailable, logisticsCountry, logisticsProvince, cartWeightKg]);
+  }, [deliveryAvailable, deliveryCountry, deliveryProvince, cartWeightKg]);
 
   const effectiveTransportMethod: "PICKUP" | "DELIVERY" | null =
     transportMethod === "DELIVERY" && deliveryAvailable
@@ -348,14 +350,14 @@ export function POSView() {
       ? manualTransportValue
       : deliveryFee;
   const deliveryLabel = transportQuote
-    ? transportQuote.label
-    : `${logisticsCountry.toUpperCase()} TRANSPORT`;
+    ? `${transportQuote.label}${deliverySourceSuffix(deliveryAddress.source)}`
+    : `${deliveryCountry.toUpperCase()} TRANSPORT${deliverySourceSuffix(deliveryAddress.source)}`;
   const transportLabel =
     effectiveTransportMethod === "DELIVERY"
       ? deliveryLabel
       : effectiveTransportMethod === "PICKUP"
       ? "Collect in store"
-      : "—";
+      : "-";
   const transportCost = effectiveTransportMethod === "DELIVERY" ? effectiveDeliveryFee : 0;
   const itemCount = lines.reduce((a, l) => a + l.quantity, 0);
   const total = subtotal + tax + transportCost;
@@ -874,7 +876,7 @@ export function POSView() {
                       <SelectItem value="DELIVERY" disabled={!deliveryAvailable}>
                         {deliveryAvailable
                           ? `${deliveryLabel} / ${fmtMoney(deliveryFee)}${transportQuote ? "" : " estimate"}`
-                          : "Transport / Add a logistics address"}
+                          : "Transport / Add a fiscal or logistics address"}
                       </SelectItem>
                     </SelectContent>
                   </Select>
@@ -1222,7 +1224,7 @@ export function POSView() {
                 <SelectItem value="DELIVERY" disabled={!deliveryAvailable}>
                   {deliveryAvailable
                     ? `${deliveryLabel} · ${fmtMoney(deliveryFee)}${transportQuote ? "" : " (estimate)"}`
-                    : "Transport · Add a logistics address to enable"}
+                    : "Transport · Add a fiscal or logistics address to enable"}
                 </SelectItem>
               </SelectContent>
             </Select>
@@ -1305,7 +1307,7 @@ export function POSView() {
             <Button
               className="w-full"
               size="lg"
-              disabled={!customer || lines.length === 0 || !effectiveTransportMethod}
+              disabled={!customer || lines.length === 0}
               onClick={openPayment}
             >
               <Wallet /> Proceed to payment

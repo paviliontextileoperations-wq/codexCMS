@@ -45,6 +45,7 @@ import { getDefaultTransportFee } from "@/lib/transportSettings";
 import { getB2cUnitPrice } from "@/lib/productSettings";
 import { normalizeProductCode } from "@/lib/productCodes";
 import { generateShippingLabelPdf } from "@/lib/shippingLabelPdf";
+import { deliverySourceSuffix, getCustomerDeliveryAddress } from "@/lib/customerAddress";
 import {
   allocateDocumentSerial,
   cloudSalesAvailable,
@@ -194,13 +195,14 @@ export function SalesView() {
     (JSON.stringify(editLines) !== JSON.stringify(viewSale.lines) ||
       JSON.stringify(editTransport ?? null) !== JSON.stringify(viewSale.transport ?? null));
 
-  // Customer logistics availability for delivery toggle.
+  // Customer delivery availability uses logistics first, then fiscal address.
   const liveCustomer = useMemo(
     () => (viewSale ? customers.find((c) => c.id === viewSale.customerId) : null),
     [viewSale, customers],
   );
-  const logisticsCountry = (liveCustomer?.logisticsAddress?.country ?? "").trim();
-  const deliveryAvailable = !!logisticsCountry;
+  const deliveryAddress = getCustomerDeliveryAddress(liveCustomer);
+  const deliveryCountry = (deliveryAddress.address?.country ?? "").trim();
+  const deliveryAvailable = !!deliveryCountry;
   const transportFee = getDefaultTransportFee();
 
   function setTransportMethod(method: "PICKUP" | "DELIVERY") {
@@ -208,7 +210,7 @@ export function SalesView() {
       if (!deliveryAvailable) return;
       setEditTransport({
         method: "DELIVERY",
-        label: `${logisticsCountry.toUpperCase()} TRANSPORT`,
+        label: `${deliveryCountry.toUpperCase()} TRANSPORT${deliverySourceSuffix(deliveryAddress.source)}`,
         fee: transportFee,
       });
     } else {
@@ -1105,8 +1107,8 @@ export function SalesView() {
                           <SelectItem value="PICKUP">Collect in store · No transport fee</SelectItem>
                           <SelectItem value="DELIVERY" disabled={!deliveryAvailable}>
                             {deliveryAvailable
-                              ? `${logisticsCountry.toUpperCase()} transport · ${fmtMoney(transportFee)} fee`
-                              : "Transport · Add a logistics address to enable"}
+                              ? `${deliveryCountry.toUpperCase()} transport${deliverySourceSuffix(deliveryAddress.source)} · ${fmtMoney(transportFee)} fee`
+                              : "Transport · Add a fiscal or logistics address to enable"}
                           </SelectItem>
                         </SelectContent>
                       </Select>

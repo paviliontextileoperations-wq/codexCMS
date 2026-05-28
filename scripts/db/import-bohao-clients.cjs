@@ -261,6 +261,45 @@ async function deleteExistingBohaoCustomers(client) {
   return result.rowCount;
 }
 
+async function upsertImportedAddress(client, customerId, customerCode, type, address, sameAsOtherAddress = false) {
+  if (!address) return;
+  const suffix = type.toUpperCase();
+  await client.query(
+    `
+      INSERT INTO cms.customer_addresses (
+        legacy_id, address_code, customer_id, address_type, address_line_1,
+        address_line_2, additional_info, postal_code, province_state, country,
+        is_default, same_as_other_address
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, true, $11)
+      ON CONFLICT (address_code) DO UPDATE SET
+        customer_id = EXCLUDED.customer_id,
+        address_line_1 = EXCLUDED.address_line_1,
+        address_line_2 = EXCLUDED.address_line_2,
+        additional_info = EXCLUDED.additional_info,
+        postal_code = EXCLUDED.postal_code,
+        province_state = EXCLUDED.province_state,
+        country = EXCLUDED.country,
+        is_default = true,
+        same_as_other_address = EXCLUDED.same_as_other_address,
+        updated_at = now()
+    `,
+    [
+      `bohao-customer-address:${customerCode}:${suffix}`,
+      `${customerCode}-${suffix}`,
+      customerId,
+      type,
+      address.line1,
+      address.line2,
+      address.additionalInfo,
+      address.postalCode,
+      address.provinceState,
+      address.country,
+      sameAsOtherAddress,
+    ],
+  );
+}
+
 async function insertCustomer(client, row, index) {
   const normalized = normalizeCustomer(row, index);
   const legacyId = `bohao-customer:${text(row.primary_source_empresa_id) || normalized.customerCode}`;
@@ -302,37 +341,8 @@ async function insertCustomer(client, row, index) {
   const customerId = customer.rows[0].id;
   const address = addressFromRow(row);
   if (address) {
-    await client.query(
-      `
-        INSERT INTO cms.customer_addresses (
-          legacy_id, address_code, customer_id, address_type, address_line_1,
-          address_line_2, additional_info, postal_code, province_state, country,
-          is_default, same_as_other_address
-        )
-        VALUES ($1, $2, $3, 'Fiscal', $4, $5, $6, $7, $8, $9, true, false)
-        ON CONFLICT (address_code) DO UPDATE SET
-          customer_id = EXCLUDED.customer_id,
-          address_line_1 = EXCLUDED.address_line_1,
-          address_line_2 = EXCLUDED.address_line_2,
-          additional_info = EXCLUDED.additional_info,
-          postal_code = EXCLUDED.postal_code,
-          province_state = EXCLUDED.province_state,
-          country = EXCLUDED.country,
-          is_default = true,
-          updated_at = now()
-      `,
-      [
-        `bohao-customer-address:${normalized.customerCode}`,
-        `${normalized.customerCode}-FISCAL`,
-        customerId,
-        address.line1,
-        address.line2,
-        address.additionalInfo,
-        address.postalCode,
-        address.provinceState,
-        address.country,
-      ],
-    );
+    await upsertImportedAddress(client, customerId, normalized.customerCode, "Fiscal", address, false);
+    await upsertImportedAddress(client, customerId, normalized.customerCode, "Logistics", address, true);
   }
 
   const phone = phoneFromRow(row);
