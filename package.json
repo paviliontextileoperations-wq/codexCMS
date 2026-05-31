@@ -25,6 +25,7 @@
     "db:import:bohao-clients": "node scripts/db/import-bohao-clients.cjs --yes",
     "db:import:bohao-products": "node scripts/db/import-bohao-products.cjs",
     "db:import:bohao-sample": "node scripts/db/import-bohao-sample.cjs",
+    "db:cleanup:cloud": "node scripts/db/cleanup-cloud-data.cjs",
     "db:reset-business": "node scripts/db/reset-business-data.cjs --yes",
     "db:seed:demo": "node scripts/db/seed-demo.cjs",
     "lint": "eslint .",
